@@ -12,7 +12,8 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - A fully built, explorable 3D environment (court, park, city)
 - A controllable player character with jointed limbs, walk/jump animation, and velocity-based movement
 - Basketball with procedural leather texture, physics (gravity, bounce, drag, rolling), and sleep system
-- Ball pickup (X key), idle chest hold, and speed-triggered dribbling with phased animation cycle
+- Ball pickup (Z key), idle chest hold, and speed-triggered dribbling with phased animation cycle
+- Shooting mechanic with aim stance (X key), adjustable arc angle (W/S), player rotation (A/D), and projectile physics with aim assist
 - Collision system for both player and ball against environment objects (benches, trash cans, bleachers, fence posts, hoop poles, backboards)
 - Dribble-time collision release (ball bounces off objects while being dribbled and escapes player control)
 - Three camera modes: Orbit, Free Roam, and Drop In (player control with camera-relative movement)
@@ -22,7 +23,6 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - Six UI buttons: Orbit Cam, Free Roam, Drop In, Ball Drop, Panels toggle, Day/Night toggle
 
 **What does NOT exist yet:**
-- Shooting mechanic (aim, power, release arc)
 - Scoring / hoop detection (ball passing through rim)
 - AI opponents or teammates
 - Game rules, scoring, game modes
@@ -31,7 +31,7 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - Court progression system
 - Player customization
 
-The project is at the **basketball dribbling stage**. The player can walk, jump, pick up the ball, hold it at chest level while idle, and automatically dribble while running. The next major milestone is **shooting mechanics** — aiming, releasing, ball arc physics, and rim/backboard collision for makes/misses.
+The project is at the **shooting stage**. The player can walk, jump, pick up the ball, hold it, dribble, enter a shooting stance, aim, and shoot toward the hoop with proper projectile arc physics. The next major milestone is **scoring detection** — determining when the ball passes through the rim and tracking points.
 
 ---
 
@@ -76,14 +76,14 @@ Hoops-Royale/
 ├── CLAUDE.md           # This file
 ├── .gitignore
 └── js/
-    ├── main.js         # Scene setup, camera, controls, day/night, animation loop (~756 lines)
+    ├── main.js         # Scene setup, camera, controls, day/night, shooting state, animation loop (~956 lines)
     ├── court.js        # Basketball court surface, lines, paint, graffiti (~672 lines)
     ├── hoops.js        # Hoop assemblies (poles, backboards, rims, chain nets) (~474 lines)
     ├── park.js         # Fencing, trees, benches, bleachers, lamps, paths (~1161 lines)
     ├── city.js         # Buildings, streets, sidewalks, cars, street props (~707 lines)
     ├── lighting.js     # All scene lights (sun, ambient, hemi, fill, rim, lampposts, moon) (~86 lines)
-    ├── player.js       # Player model, joints, walk/jump/idle/carry animation, collision (~622 lines)
-    └── ball.js         # Basketball creation, physics, dribbling, pickup, collisions (~703 lines)
+    ├── player.js       # Player model, joints, walk/jump/idle/carry/shoot animation, collision (~654 lines)
+    └── ball.js         # Basketball creation, physics, dribbling, pickup, shooting, collisions (~881 lines)
 ```
 
 ### Module Dependency Graph
@@ -97,7 +97,7 @@ index.html
         ├── js/city.js       → createCity(scene)
         ├── js/lighting.js   → createLighting(scene)
         ├── js/player.js     → createPlayer(scene), updatePlayer(pd, delta, input, movementBasis, colliders, carryState)
-        └── js/ball.js       → createBasketball(scene), dropBasketballAtCenter(ball), tryPickUpBasketball(ball, playerData), updateBasketball(ball, delta, colliders, playerData)
+        └── js/ball.js       → createBasketball(scene), dropBasketballAtCenter(ball), tryPickUpBasketball(ball, playerData), updateBasketball(ball, delta, colliders, playerData), shootBasketball(ball, playerData, angleDeg)
 ```
 
 Every environment module exports a single factory function that creates a `THREE.Group`, populates it, adds it to `scene`, and returns it. `hoops.js` and `park.js` also populate `scene.userData` with collider arrays. `player.js` and `ball.js` export additional update/interaction functions.
@@ -138,7 +138,11 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, and ani
 - `transparentObjects[]` — cached list of all meshes with `userData.isTransparentHelper = true`
 - `animatedNets[]`, `animatedLeaves[]` — cached for per-frame animation
 - `hoopColliders[]`, `parkColliders[]`, `playerColliders[]` — combined collider arrays from hoops.js and park.js
-- `pickupQueued` — set true on X keypress, consumed next frame
+- `pickupQueued` — set true on Z keypress, consumed next frame
+- `shootQueued`, `cancelShootQueued` — set true on X/C keypress in appropriate states
+- `shootingStance` — true when player is in aim/shoot mode; gates input routing
+- `shootAngle` — current launch angle in degrees (38-70, default 52)
+- `shootInput` — `{ aimUp, aimDown, turnLeft, turnRight }` flags for stance controls
 - `sunMesh`, `moonMesh`, `moonGlowMesh` — celestial body references
 - `playerMoveBasis` — `{ forward, right }` vectors computed from camera direction each frame for camera-relative controls
 
@@ -147,6 +151,15 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, and ani
 - `window.toggleTransparentHelpers()`
 - `window.toggleDayNight()`
 - `window.dropBall()`
+
+**Shooting state machine** (in animate loop, player mode only):
+- When `shootQueued` and player holds ball + grounded → enter `shootingStance`
+- In stance: W/S adjust `shootAngle` (38-70°), A/D rotate `playerData.facingAngle` directly
+- X fires: calls `shootBasketball(ball, playerData, shootAngle)` then exits stance
+- C cancels: exits stance, returns to normal play
+- `playerInput` is zeroed every frame while in stance so the player stands still
+- `carryState.shooting` flag is set so player.js applies the shooting animation pose
+- `ball._shootingStance` flag is set so ball.js holds the ball above the player's head
 
 **Camera-relative movement** (in player mode): Each frame, `camera.getWorldDirection()` is projected onto the XZ plane and normalized to create a forward vector. The right vector is the cross product with world up. These are passed to `updatePlayer()` as `movementBasis` so WASD/arrow keys move relative to the camera's facing direction, not world axes.
 
@@ -320,16 +333,19 @@ All animation is done by rotating the pivot groups around their X axis (and Y/Z 
 3. **Idle**: Subtle breathing — tiny arm sway on a sine wave. All joints lerp back to rest.
 4. **Carry-idle** (ball held, standing): Two-hand chest hold. Arms bent inward (shoulders rotated on Y/Z axes), elbows at -1.12 radians. Subtle breathing movement.
 5. **Carry-dribble** (ball held, running): Right hand drives the dribble. Right shoulder/elbow animate based on `dribblePhase`. Left arm holds secondary position. Lower body continues normal walk cycle.
+6. **Shooting stance** (ball held, `carryState.shooting = true`): Both arms raised overhead (shoulders -2.6/-2.4 X), slight elbow bend, legs in stable base with knees at 0.22 bend. Smooth lerp transition (rate 12).
 
 **Controls** (handled in main.js):
-- Arrow keys / WASD set `playerInput` flags
+- Arrow keys / WASD set `playerInput` flags (or `shootInput` when in shooting stance)
 - Space sets `playerInput.jump`
-- X queues ball pickup attempt
-- Player smoothly rotates to face movement direction
+- Z queues ball pickup attempt
+- X enters shooting stance (when holding ball, grounded) / fires shot (when in stance)
+- C cancels shooting stance
+- Player smoothly rotates to face movement direction (or A/D direct rotation in stance)
 
-### `ball.js` (~703 lines) — The Basketball
+### `ball.js` (~881 lines) — The Basketball
 
-The newest and most complex gameplay module. Handles ball creation, physics simulation, environment/player collision, held ball state machine (idle hold + dribbling), and dribble-time collision release.
+The most complex gameplay module. Handles ball creation, physics simulation, environment/player collision, held ball state machine (idle hold + dribbling + shooting stance), dribble-time collision release, and shooting with projectile physics.
 
 **Ball creation** (`createBasketball`):
 - `SphereGeometry` with `BALL_RADIUS = 0.1193` (official size 7)
@@ -420,6 +436,29 @@ The newest and most complex gameplay module. Handles ball creation, physics simu
 - If collision detected: ball velocity gets "away from player" boost, `releaseHeldBall()` called with `preserveVelocity = true`
 - Ball bounces away naturally and returns to free physics — player loses control
 - This prevents the ball from clipping through benches/fences while dribbling
+
+**Shooting stance hold** (`_shootingStance` flag):
+- When `ball._shootingStance = true`, `updateHeldByPlayer` positions the ball above the player's head at `SHOT_RELEASE_HEIGHT` (2.15m above ground), slightly forward
+- Smooth lerp follow like idle hold, ball stays locked to overhead position as player rotates
+
+**Shooting** (`shootBasketball`):
+- `getTargetRimPosition()` computes both rim positions and picks the one the player is most facing (dot product)
+- Rim positions calculated from `HALF_COURT_LENGTH`, `BACKBOARD_FROM_BASELINE`, `RIM_FROM_BACKBOARD`, `RIM_RADIUS_HOOP` — same math as hoops.js
+- Projectile motion formula: `speed = sqrt(g * d^2 / (2 * cos^2(a) * (d*tan(a) - dy)))` where `d` = horizontal distance, `dy` = height difference, `a` = launch angle
+- Speed capped at 18 m/s to prevent absurd close-range launches
+- **Aim assist**: final aim direction is 70% player facing + 30% actual rim direction, so the player has control but shots are gently corrected toward the hoop
+- Ball positioned at release point (above head), then `releaseHeldBall(ball, pd, true)` with velocity already set
+- Visual backspin: `_backspin` object on ball with axis (perpendicular to facing) and speed (8 rad/s), applied in `applyRollingRotation`, decays at 0.5% per frame, cleared on floor contact
+
+**Shooting physics constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `SHOT_RELEASE_HEIGHT` | 2.15 | Release point above ground (meters) |
+| `SHOT_MIN_ANGLE` | 38 | Flattest allowed shot (degrees) |
+| `SHOT_MAX_ANGLE` | 70 | Highest arc (degrees) |
+| `SHOT_DEFAULT_ANGLE` | 52 | Starting angle when entering stance |
+| `SHOT_ANGLE_SPEED` | 28 | Degrees per second when adjusting with W/S |
+| `SHOT_BACKSPIN` | 8.0 | Visual backspin speed (radians/sec) |
 
 ### `index.html` (~184 lines) — Entry Point
 
@@ -513,23 +552,24 @@ Everything is in meters with Y up. Court center is at world origin (0, 0, 0).
 5. **No boundary constraints on player** — can walk beyond the court, outside the fence (through gate openings), and into the city.
 6. **No hoop/rim collision for scoring** — ball passes through the rim. Need ring torus collision + detection for "made basket."
 7. **Dribble only while grounded** — ball returns to chest hold if player jumps while dribbling. No mid-air dribble or ball release.
-8. **No throw/shoot mechanic** — player can only hold and dribble. Cannot release the ball toward the hoop.
+8. **No scoring detection** — ball can be shot toward the hoop but there is no detection for when it passes through the rim. No score tracking.
+9. **Shooting only while stationary** — player must be standing still and grounded to enter shooting stance. No jump shots or running shots yet.
+10. **No shot feedback UI** — no visual indicator for aim angle or shot power. Player relies on feel and the ball arc.
 
 ---
 
 ## Where We Left Off / Next Steps
 
-The basketball can be spawned, picked up, held, and dribbled. The dribble collision release system works — the ball bounces away if you run it into objects. The project is ready for **shooting mechanics**.
+The basketball can be spawned, picked up, held, dribbled, and shot. The shooting mechanic uses projectile physics with an adjustable arc angle and aim assist. The ball bounces off rims, backboards, and environment objects. The project is ready for **scoring detection**.
 
 ### Immediate next steps:
-1. **Shooting mechanic** — Aim toward hoop, power gauge or timed release, ball follows arc trajectory
-2. **Rim/backboard collision** — Ball bouncing off the rim torus and backboard face, with "swish" (clean through) detection
-3. **Scoring detection** — Determine when ball passes through the rim cylinder from above = made basket
-4. **Score HUD** — Display points on screen
+1. **Scoring detection** — Determine when ball passes through the rim cylinder from above = made basket
+2. **Score HUD** — Display points on screen
+3. **Shot feedback** — Visual aim indicator, angle display, or shot meter
 
 ### Medium-term:
-5. **Shot types** — Layups (close range), mid-range jumpers, three-pointers (beyond arc)
-6. **Ball release on jump** — Throw/pass the ball while airborne
+4. **Shot types** — Jump shots, layups (close range), mid-range jumpers, three-pointers
+5. **Ball release on jump** — Throw/pass the ball while airborne
 7. **AI opponents** — Computer-controlled players for pickup games
 8. **Game modes** — 1v1, 3v3, H-O-R-S-E, free play
 9. **Sound** — Ball bounce, swish, chain net rattle, ambient city sounds
@@ -570,8 +610,10 @@ The basketball can be spawned, picked up, held, and dribbled. The dribble collis
 
 11. **Collision system** — Both player and ball use the same collider arrays (`playerColliders`). When adding new physical objects, create colliders in the module that builds them and add to `scene.userData.hoopColliders` or `scene.userData.parkColliders`. Main.js merges them during scene build.
 
-12. **Ball state machine** — The ball has three major states: free (physics simulation), held-idle (chest hold, not moving), held-dribbling (moving while holding). Transitions: pickup → held-idle. Start moving → held-dribbling. Stop moving → held-idle. Dribble collision → free. The `carryState` object passed from main.js to player.js drives arm animation poses.
+12. **Ball state machine** — The ball has four major states: free (physics simulation), held-idle (chest hold, not moving), held-dribbling (moving while holding), and held-shooting (above head in aiming stance). Transitions: pickup → held-idle. Start moving → held-dribbling. Stop moving → held-idle. Dribble collision → free. Press X → held-shooting. Press X again → free (shot released with velocity). Press C → held-idle (cancel). The `carryState` object passed from main.js to player.js drives arm animation poses (includes `shooting` flag).
 
 13. **Performance-sensitive patterns** — Delta is smoothed (`smoothedDelta`) to prevent physics jitter. Ball uses adaptive substeps (1-5 based on speed). Broadphase culling uses cached bounding circles on colliders. Pixel ratio is capped at 1.5. Lamp SpotLights don't cast shadows.
 
-14. **Adding a shooting mechanic** — You'll need: (a) a way to aim (probably camera direction projected onto the court), (b) a release trigger (key press), (c) initial velocity calculation for the ball arc, (d) calling `releaseHeldBall()` with the right velocity, (e) rim torus collision detection in ball.js, (f) "through the hoop" detection (ball crossing the rim plane from above with position inside rim radius).
+14. **Shooting mechanic architecture** — The shooting system spans all three gameplay files. `main.js` owns the state machine (`shootingStance`, `shootAngle`, `shootInput`), gates input routing between normal play and aim mode, and constructs `carryState.shooting`. `player.js` animates the shooting pose when `carryState.shooting` is true. `ball.js` holds the ball overhead when `_shootingStance` is set, and `shootBasketball()` calculates projectile velocity using the standard formula with aim assist blending. The system is designed so adding scoring detection only requires checking ball position against rim coordinates in the physics loop.
+
+15. **Adding scoring detection** — You'll need: (a) track when ball.y crosses `RIM_HEIGHT` (3.048m) from above while falling (`velocity.y < 0`), (b) check if ball XZ position is within `RIM_RADIUS` (0.2286m) of rim center at that moment, (c) if both conditions met = made basket. Rim centers are at `(0, 3.048, ±12.726)` approximately. Consider adding a `lastAboveRim` flag to detect the crossing frame.

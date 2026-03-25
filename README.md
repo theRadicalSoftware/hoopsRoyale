@@ -24,7 +24,7 @@ Hoops Royale drops you into a gritty NYC pickup court surrounded by park fences,
 
 ## What's Not Here (Yet)
 
-Shooting. Scoring. Opponents. Sound. The game is at the dribbling stage — you can walk, jump, pick up the ball, and dribble it around the court. The next milestone is getting the ball through the hoop.
+Scoring. Opponents. Sound. The game is at the shooting stage — you can walk, jump, pick up the ball, dribble, enter a shooting stance, aim, and launch the ball toward the hoop with realistic arc physics. The next milestone is detecting when the ball goes through the rim and tracking score.
 
 ---
 
@@ -53,7 +53,11 @@ Open `http://localhost:8080`. That's it — no install, no build step, no depend
 | | Escape | Release mouse |
 | **Drop In** | WASD / Arrows | Walk (camera-relative) |
 | | Space | Jump |
-| | X | Pick up ball |
+| | Z | Pick up ball |
+| | X | Enter shooting stance (hold ball) / Shoot (in stance) |
+| | W / S (in stance) | Adjust shot arc angle up / down |
+| | A / D (in stance) | Rotate player left / right |
+| | C | Cancel shooting stance |
 | | Click + drag | Orbit camera around player |
 | | Scroll | Zoom |
 
@@ -67,14 +71,14 @@ Three.js v0.162.0 loaded via CDN import map. Vanilla ES modules. Zero build tool
 
 ```
 js/
-├── main.js       — Scene, camera, controls, day/night, animation loop
+├── main.js       — Scene, camera, controls, day/night, shooting state machine, animation loop
 ├── court.js      — Court surface, lines, paint, graffiti
 ├── hoops.js      — Poles, backboards, rims, chain nets, colliders
 ├── park.js       — Fencing, lamps, trees, benches, bleachers, paths, colliders
 ├── city.js       — Buildings, streets, sidewalks, cars, props
 ├── lighting.js   — Sun, moon, ambient, hemisphere, fill, rim, lamppost lights
 ├── player.js     — Player model, joint animation, movement physics, collision
-└── ball.js       — Basketball physics, dribbling, pickup, collision, state machine
+└── ball.js       — Basketball physics, dribbling, pickup, shooting, collision, state machine
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the full technical reference — architecture, constants, collision system, coordinate map, known issues, and roadmap.
@@ -83,9 +87,9 @@ See [CLAUDE.md](CLAUDE.md) for the full technical reference — architecture, co
 
 ## Roadmap
 
-**Now:** Dribbling works. Ball bounces off environment objects while held.
+**Now:** Shooting works. Pick up the ball, enter stance with X, aim with W/S/A/D, and shoot with X. Ball follows a realistic arc toward the hoop.
 
-**Next:** Shooting mechanic — aim, release, ball arc, rim/backboard collision, scoring detection.
+**Next:** Scoring detection — track when the ball goes through the rim, display points.
 
 **Later:** AI opponents, game modes (1v1, 3v3, H-O-R-S-E), sound design, court progression, player customization, multiplayer.
 
