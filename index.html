@@ -70,6 +70,102 @@
             text-transform: uppercase;
         }
 
+        /* ── Start Menu Overlay ─────────────────────────── */
+        #start-menu {
+            position: fixed;
+            inset: 0;
+            z-index: 900;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            background:
+                radial-gradient(1200px 620px at 70% 10%, rgba(255, 140, 60, 0.12), transparent 62%),
+                radial-gradient(1000px 640px at 18% 84%, rgba(90, 150, 255, 0.12), transparent 62%),
+                linear-gradient(135deg, rgba(8, 16, 40, 0.54), rgba(12, 24, 52, 0.44));
+            transition: opacity 0.55s ease;
+        }
+        #start-menu.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        #start-menu.fade-out {
+            opacity: 0;
+            pointer-events: none;
+        }
+        #start-glass {
+            width: min(86vw, 560px);
+            padding: 36px 34px 30px;
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.24);
+            background:
+                linear-gradient(180deg, rgba(255,255,255,0.2), rgba(255,255,255,0.09)),
+                linear-gradient(120deg, rgba(20, 34, 73, 0.55), rgba(19, 28, 54, 0.45));
+            backdrop-filter: blur(18px) saturate(135%);
+            box-shadow:
+                0 30px 70px rgba(0, 0, 0, 0.36),
+                inset 0 1px 0 rgba(255, 255, 255, 0.28);
+            color: #f5f7ff;
+            text-align: center;
+        }
+        #start-eyebrow {
+            font-size: 0.64rem;
+            letter-spacing: 0.3em;
+            text-transform: uppercase;
+            color: rgba(245, 248, 255, 0.68);
+            margin-bottom: 14px;
+        }
+        #start-title {
+            font-size: clamp(2rem, 6vw, 3.4rem);
+            letter-spacing: 0.26em;
+            text-transform: uppercase;
+            font-weight: 800;
+            line-height: 1;
+            margin-bottom: 16px;
+            text-shadow: 0 0 24px rgba(255, 255, 255, 0.18);
+        }
+        #start-title span {
+            color: #ff7a3d;
+            text-shadow: 0 0 20px rgba(255, 122, 61, 0.38);
+        }
+        #start-subtitle {
+            font-size: 0.8rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: rgba(232, 237, 255, 0.78);
+            margin-bottom: 26px;
+        }
+        #btn-start-game {
+            border: 1px solid rgba(255, 255, 255, 0.34);
+            border-radius: 999px;
+            padding: 11px 28px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            cursor: pointer;
+            color: #ffffff;
+            background: linear-gradient(90deg, rgba(255, 121, 58, 0.9), rgba(255, 163, 57, 0.86));
+            box-shadow: 0 12px 30px rgba(255, 124, 60, 0.3);
+            transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
+        }
+        #btn-start-game:hover {
+            transform: translateY(-1px) scale(1.01);
+            filter: brightness(1.06);
+            box-shadow: 0 16px 32px rgba(255, 124, 60, 0.36);
+        }
+        #btn-start-game:active {
+            transform: translateY(0);
+        }
+        #start-hint {
+            margin-top: 14px;
+            font-size: 0.65rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: rgba(233, 239, 255, 0.56);
+        }
+
         /* ── Top-left branding ───────────────────────────── */
         #ui-overlay {
             position: fixed;
@@ -143,6 +239,15 @@
         #btn-balldrop {
             background: rgba(255, 138, 51, 0.66);
         }
+        #ui-overlay,
+        #controls-hint,
+        #ui-buttons {
+            transition: opacity 0.35s ease;
+        }
+        .hud-hidden {
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
     </style>
 </head>
 <body>
@@ -153,6 +258,17 @@
             <div id="loading-bar"></div>
         </div>
         <div id="loading-text">Loading court...</div>
+    </div>
+
+    <!-- Start Menu -->
+    <div id="start-menu" aria-hidden="true">
+        <div id="start-glass">
+            <div id="start-eyebrow">Street Session</div>
+            <div id="start-title"><span>Hoops</span> Royale</div>
+            <div id="start-subtitle">The Park Is Live</div>
+            <button id="btn-start-game" onclick="startGame()">Click To Begin</button>
+            <div id="start-hint">Environment will rotate slowly until start</div>
+        </div>
     </div>
 
     <!-- HUD -->

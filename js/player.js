@@ -474,8 +474,40 @@ function animateLimbs(pd, isMoving, delta, carryState = null) {
 
     if (carryingBall) {
         const armLerp = 1 - Math.exp(-18 * delta);
-        const dribbling = carryState?.dribbling ?? (isMoving && pd.isGrounded);
+        const shooting = !!carryState?.shooting;
+        const dribbling = !shooting && (carryState?.dribbling ?? (isMoving && pd.isGrounded));
         const dribblePhase = carryState.dribblePhase || t;
+
+        if (shooting) {
+            // ── Shooting stance ───────────────────────────
+            // Legs slightly bent, stable base
+            const shotLerp = 1 - Math.exp(-12 * delta);
+            const kneeBend = 0.22;
+            j.leftHip.rotation.x += (0.08 - j.leftHip.rotation.x) * shotLerp;
+            j.rightHip.rotation.x += (0.08 - j.rightHip.rotation.x) * shotLerp;
+            j.leftKnee.rotation.x += (kneeBend - j.leftKnee.rotation.x) * shotLerp;
+            j.rightKnee.rotation.x += (kneeBend - j.rightKnee.rotation.x) * shotLerp;
+
+            // Ball above head — both arms extended upward
+            // Shoulders rotate backward (negative X = arms go up/behind)
+            // Guide hand (left) slightly lower, shooting hand (right) higher
+            const rightShoulderX = -2.6;   // arm extended up overhead
+            const leftShoulderX = -2.4;    // guide hand slightly below
+            const rightElbowX = -0.35;     // slight elbow bend for control
+            const leftElbowX = -0.55;      // guide hand more relaxed
+
+            j.rightShoulder.rotation.x += (rightShoulderX - j.rightShoulder.rotation.x) * shotLerp;
+            j.leftShoulder.rotation.x += (leftShoulderX - j.leftShoulder.rotation.x) * shotLerp;
+            j.rightElbow.rotation.x += (rightElbowX - j.rightElbow.rotation.x) * shotLerp;
+            j.leftElbow.rotation.x += (leftElbowX - j.leftElbow.rotation.x) * shotLerp;
+
+            // Arms close to body, not spread wide
+            j.leftShoulder.rotation.z += (-0.18 - j.leftShoulder.rotation.z) * shotLerp;
+            j.rightShoulder.rotation.z += (0.12 - j.rightShoulder.rotation.z) * shotLerp;
+            j.leftShoulder.rotation.y += (0.06 - j.leftShoulder.rotation.y) * shotLerp;
+            j.rightShoulder.rotation.y += (-0.06 - j.rightShoulder.rotation.y) * shotLerp;
+            return;
+        }
 
         if (dribbling) {
             // Keep lower body walk cycle while upper body enters dribble pose.

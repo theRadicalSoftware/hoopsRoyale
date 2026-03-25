@@ -29,6 +29,19 @@ const DRIBBLE_MIN_STROKE = 0.29;
 const HOLD_SMOOTH_IDLE = 30.0;
 const HOLD_SMOOTH_DRIBBLE = 30.0;
 
+// ─── Shooting constants ────────────────────────────────────
+const RIM_HEIGHT = 3.048;
+const HALF_COURT_LENGTH = 14.325;
+const BACKBOARD_FROM_BASELINE = 1.22;
+const RIM_FROM_BACKBOARD = 0.15;
+const RIM_RADIUS_HOOP = 0.2286;
+const SHOT_RELEASE_HEIGHT = 2.15;       // above ground, overhead release point
+const SHOT_MIN_ANGLE = 38;              // degrees — flattest allowed shot
+const SHOT_MAX_ANGLE = 70;              // degrees — highest arc
+const SHOT_DEFAULT_ANGLE = 52;          // degrees — comfortable mid-range arc
+const SHOT_ANGLE_SPEED = 28;            // degrees per second when adjusting
+const SHOT_BACKSPIN = 8.0;              // radians per second of visual backspin
+
 const tmpNormal = new THREE.Vector3();
 const tmpTangent = new THREE.Vector3();
 const tmpAxis = new THREE.Vector3();
@@ -83,6 +96,7 @@ export function dropBasketballAtCenter(ball) {
     ball.active = true;
     ball.heldByPlayer = false;
     ball.dribblingByPlayer = false;
+    ball._shootingStance = false;
     ball.dribblePhase = 0;
     ball.sleeping = false;
     ball.grounded = false;
@@ -181,6 +195,7 @@ function resolveFloor(ball, step) {
 
     p.y = floorY + ball.radius;
     ball.grounded = true;
+    ball._backspin = null;
 
     if (Math.abs(ball.velocity.y) > 0.35) {
         ball.velocity.y = -ball.velocity.y * FLOOR_BOUNCE;
@@ -371,6 +386,16 @@ function applyRollingRotation(ball) {
     const displacement = tmpAxis.copy(ball.mesh.position).sub(ball.prevPosition);
     ball.prevPosition.copy(ball.mesh.position);
 
+    // Visual backspin during shot flight
+    if (ball._backspin && !ball.grounded && !ball.heldByPlayer) {
+        const spin = ball._backspin;
+        tmpQuat.setFromAxisAngle(spin.axis, spin.speed * 0.016);
+        ball.mesh.quaternion.premultiply(tmpQuat);
+        // Decay spin over time
+        spin.speed *= 0.995;
+        if (spin.speed < 0.5) ball._backspin = null;
+    }
+
     const horizontalDist = Math.hypot(displacement.x, displacement.z);
     if (horizontalDist < 1e-6) return;
 
@@ -414,6 +439,26 @@ function updateHeldByPlayer(ball, playerData, delta, environmentColliders = null
     getHandWorldPosition(playerData, 'left', tmpLeftHand, playerPos, groundY);
     selectPlayerRightHand(tmpChosenDribbleHand, tmpRightHand, tmpLeftHand, playerPos, tmpRight);
     let phase01 = 0;
+
+    // ── Shooting stance hold ──────────────────────────
+    if (ball._shootingStance) {
+        // Ball held above head, slightly in front — follows shooting hand
+        const shootHoldY = groundY + SHOT_RELEASE_HEIGHT;
+        tmpHoldTarget.set(
+            playerPos.x + tmpForward.x * 0.15,
+            shootHoldY,
+            playerPos.z + tmpForward.z * 0.15
+        );
+
+        const follow = snap ? 1 : (1 - Math.exp(-HOLD_SMOOTH_IDLE * dt));
+        ball.mesh.position.lerp(tmpHoldTarget, follow);
+        ball.velocity.set(0, 0, 0);
+        ball.sleeping = false;
+        ball.grounded = false;
+        ball.idleFrames = 0;
+        ball.prevPosition.copy(ball.mesh.position);
+        return false;
+    }
 
     if (dribbling) {
         const speedT = THREE.MathUtils.clamp((speed - DRIBBLE_TRIGGER_SPEED) / 3.2, 0, 1);
@@ -594,6 +639,7 @@ function releaseHeldBall(ball, playerData = null, preserveVelocity = false) {
 
     ball.heldByPlayer = false;
     ball.dribblingByPlayer = false;
+    ball._shootingStance = false;
     ball.idleFrames = 0;
     ball.grounded = false;
     ball.sleeping = false;
@@ -612,6 +658,138 @@ function releaseHeldBall(ball, playerData = null, preserveVelocity = false) {
     }
 
     ball.prevPosition.copy(ball.mesh.position);
+}
+
+// ─── Shooting ───────────────────────────────────────────────
+
+/**
+ * Compute the two rim center positions (z coordinates) for both hoops.
+ * Returns the one the player is facing (dot product with facing direction).
+ */
+function getTargetRimPosition(playerData) {
+    const facing = playerData.facingAngle || 0;
+    const fwdX = Math.sin(facing);
+    const fwdZ = Math.cos(facing);
+    const px = playerData.group.position.x;
+    const pz = playerData.group.position.z;
+
+    const rims = [];
+    for (const side of [-1, 1]) {
+        const baselineZ = side * HALF_COURT_LENGTH;
+        const backboardFaceZ = baselineZ - side * BACKBOARD_FROM_BASELINE;
+        const rimZ = backboardFaceZ - side * (RIM_FROM_BACKBOARD + RIM_RADIUS_HOOP);
+        rims.push({ x: 0, y: RIM_HEIGHT, z: rimZ });
+    }
+
+    // Pick the rim the player is more facing toward
+    let best = rims[0];
+    let bestDot = -Infinity;
+    for (const rim of rims) {
+        const dx = rim.x - px;
+        const dz = rim.z - pz;
+        const dot = dx * fwdX + dz * fwdZ;
+        if (dot > bestDot) {
+            bestDot = dot;
+            best = rim;
+        }
+    }
+    return best;
+}
+
+/**
+ * Shoot the basketball toward the nearest hoop the player is facing.
+ * Uses projectile motion formula to calculate the required initial velocity
+ * given the launch angle, release position, and target (rim center).
+ *
+ * @param {object} ball - ball state object
+ * @param {object} playerData - player state object
+ * @param {number} launchAngleDeg - launch angle in degrees from horizontal
+ * @returns {boolean} true if shot was released successfully
+ */
+export function shootBasketball(ball, playerData, launchAngleDeg) {
+    if (!ball || !ball.heldByPlayer || !playerData) return false;
+
+    const rim = getTargetRimPosition(playerData);
+    const groundY = getPlayerGroundY(playerData);
+    const releaseY = groundY + SHOT_RELEASE_HEIGHT;
+
+    const px = playerData.group.position.x;
+    const pz = playerData.group.position.z;
+
+    // Use player facing direction for the shot, not raw aim at rim
+    const facing = playerData.facingAngle || 0;
+    const fwdX = Math.sin(facing);
+    const fwdZ = Math.cos(facing);
+
+    // Horizontal distance from release point to rim center
+    const dx = rim.x - px;
+    const dz = rim.z - pz;
+    const horizontalDist = Math.hypot(dx, dz);
+
+    // Height difference (target - release)
+    const dy = rim.y - releaseY;
+
+    // Clamp launch angle
+    const angleDeg = Math.max(SHOT_MIN_ANGLE, Math.min(SHOT_MAX_ANGLE, launchAngleDeg));
+    const angleRad = angleDeg * Math.PI / 180;
+
+    const cosA = Math.cos(angleRad);
+    const tanA = Math.tan(angleRad);
+    const g = Math.abs(GRAVITY); // use ball.js GRAVITY (11.5)
+
+    // Projectile formula: speed = sqrt(g * d^2 / (2 * cos^2(a) * (d*tan(a) - dy)))
+    const denominator = horizontalDist * tanA - dy;
+    if (denominator <= 0.01) {
+        // Angle too flat to reach the target — just lob it forward
+        ball.velocity.set(fwdX * 5, 6, fwdZ * 5);
+        releaseHeldBall(ball, playerData, true);
+        return true;
+    }
+
+    const speedSq = (g * horizontalDist * horizontalDist) / (2 * cosA * cosA * denominator);
+    if (speedSq <= 0) {
+        ball.velocity.set(fwdX * 5, 6, fwdZ * 5);
+        releaseHeldBall(ball, playerData, true);
+        return true;
+    }
+
+    const speed = Math.sqrt(speedSq);
+
+    // Cap speed to prevent absurd launches from very close range
+    const cappedSpeed = Math.min(speed, 18);
+
+    // Decompose into 3D velocity using PLAYER FACING direction
+    const vHorizontal = cappedSpeed * cosA;
+    const vy = cappedSpeed * Math.sin(angleRad);
+
+    // Aim correction: blend facing direction with actual rim direction
+    // This gives the player's facing direction priority but gently corrects
+    // toward the rim so shots don't fly wildly off target
+    const rimDirX = horizontalDist > 0.1 ? dx / horizontalDist : fwdX;
+    const rimDirZ = horizontalDist > 0.1 ? dz / horizontalDist : fwdZ;
+
+    // 70% facing direction + 30% actual rim direction = some aim assist
+    const aimX = fwdX * 0.7 + rimDirX * 0.3;
+    const aimZ = fwdZ * 0.7 + rimDirZ * 0.3;
+    const aimLen = Math.hypot(aimX, aimZ) || 1;
+
+    ball.velocity.set(
+        vHorizontal * (aimX / aimLen),
+        vy,
+        vHorizontal * (aimZ / aimLen)
+    );
+
+    // Position ball at release point (above head)
+    ball.mesh.position.set(px + fwdX * 0.15, releaseY, pz + fwdZ * 0.15);
+
+    // Release the ball
+    releaseHeldBall(ball, playerData, true);
+
+    // Add visual backspin (rotate around the right axis relative to facing)
+    const spinAxis = new THREE.Vector3(fwdZ, 0, -fwdX).normalize();
+    ball._backspin = { axis: spinAxis, speed: SHOT_BACKSPIN };
+
+    return true;
 }
 
 function getPlayerGroundY(playerData) {

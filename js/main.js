@@ -6,7 +6,7 @@ import { createPark } from './park.js';
 import { createCity } from './city.js';
 import { createLighting } from './lighting.js';
 import { createPlayer, updatePlayer } from './player.js';
-import { createBasketball, dropBasketballAtCenter, tryPickUpBasketball, updateBasketball } from './ball.js';
+import { createBasketball, dropBasketballAtCenter, tryPickUpBasketball, updateBasketball, shootBasketball } from './ball.js';
 
 // ─── Renderer ───────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -95,10 +95,18 @@ let moonGlowMesh = null;
 let playerData = null;
 let basketballData = null;
 let pickupQueued = false;
+let shootQueued = false;
+let cancelShootQueued = false;
+let shootingStance = false;   // true when player is in aiming/shooting stance
+let shootAngle = 52;          // current launch angle in degrees
+const SHOOT_ANGLE_MIN = 38;
+const SHOOT_ANGLE_MAX = 70;
+const SHOOT_ANGLE_SPEED = 28; // degrees per second
 let hoopColliders = [];
 let parkColliders = [];
 let playerColliders = [];
 const playerInput = { forward: false, backward: false, left: false, right: false, jump: false };
+const shootInput = { aimUp: false, aimDown: false, turnLeft: false, turnRight: false };
 const animatedNets = [];
 const animatedLeaves = [];
 
@@ -114,6 +122,79 @@ const playerMoveRight = new THREE.Vector3();
 const playerMoveBasis = { forward: playerMoveForward, right: playerMoveRight };
 let smoothedDelta = 1 / 60;
 let stabilizedElapsed = 0;
+let gameStarted = false;
+let startMenuActive = false;
+const START_ORBIT_SPEED = 0.09;
+const startOrbitCenter = new THREE.Vector3(0, 1.15, 0);
+let startOrbitRadius = 34;
+let startOrbitAngle = 0;
+let startOrbitHeight = 13.5;
+
+const startMenu = document.getElementById('start-menu');
+const uiOverlay = document.getElementById('ui-overlay');
+const uiButtons = document.getElementById('ui-buttons');
+const controlsHint = document.getElementById('controls-hint');
+
+function setGameplayHudVisible(visible) {
+    const method = visible ? 'remove' : 'add';
+    uiOverlay?.classList[method]('hud-hidden');
+    uiButtons?.classList[method]('hud-hidden');
+    controlsHint?.classList[method]('hud-hidden');
+}
+
+function setupStartMenuOrbit() {
+    const dx = camera.position.x - startOrbitCenter.x;
+    const dz = camera.position.z - startOrbitCenter.z;
+    startOrbitRadius = THREE.MathUtils.clamp(Math.hypot(dx, dz), 20, 58);
+    startOrbitAngle = Math.atan2(dx, dz);
+    startOrbitHeight = THREE.MathUtils.clamp(camera.position.y, 9, 24);
+}
+
+function updateStartMenuCamera(delta) {
+    startOrbitAngle -= START_ORBIT_SPEED * delta; // clockwise
+    const yBob = Math.sin(stabilizedElapsed * 0.22) * 0.15;
+    camera.position.set(
+        startOrbitCenter.x + Math.sin(startOrbitAngle) * startOrbitRadius,
+        startOrbitHeight + yBob,
+        startOrbitCenter.z + Math.cos(startOrbitAngle) * startOrbitRadius
+    );
+    camera.lookAt(startOrbitCenter);
+}
+
+function showStartMenu() {
+    startMenuActive = true;
+    gameStarted = false;
+    if (isPointerLocked) document.exitPointerLock();
+    controls.enabled = false;
+    setupStartMenuOrbit();
+    setGameplayHudVisible(false);
+
+    if (startMenu) {
+        startMenu.style.display = 'flex';
+        startMenu.classList.remove('fade-out');
+        startMenu.classList.add('active');
+        startMenu.setAttribute('aria-hidden', 'false');
+    }
+}
+
+function startGame() {
+    if (!startMenuActive) return;
+
+    startMenuActive = false;
+    gameStarted = true;
+
+    if (startMenu) {
+        startMenu.classList.remove('active');
+        startMenu.classList.add('fade-out');
+        startMenu.setAttribute('aria-hidden', 'true');
+        setTimeout(() => {
+            if (!startMenuActive && startMenu) startMenu.style.display = 'none';
+        }, 560);
+    }
+
+    setGameplayHudVisible(true);
+    switchCameraMode('orbit');
+}
 
 function toggleDayNight() {
     isNight = !isNight;
@@ -127,6 +208,15 @@ function toggleDayNight() {
 
 function dropBall() {
     if (!basketballData) return;
+    // Reset shooting stance if active
+    if (shootingStance) {
+        shootingStance = false;
+        basketballData._shootingStance = false;
+        shootAngle = 52;
+        shootQueued = false;
+        cancelShootQueued = false;
+        Object.keys(shootInput).forEach(k => shootInput[k] = false);
+    }
     dropBasketballAtCenter(basketballData);
 
     const btn = document.getElementById('btn-balldrop');
@@ -299,6 +389,7 @@ async function buildScene() {
     await delay(500);
     loadingScreen.classList.add('fade-out');
     setTimeout(() => loadingScreen.style.display = 'none', 1000);
+    setTimeout(() => showStartMenu(), 650);
 }
 
 function tagCityWindows() {
@@ -540,6 +631,8 @@ function updateFreeRoam(delta) {
 
 // ─── Input Handlers ─────────────────────────────────────────
 function onKeyDown(e) {
+    if (!gameStarted) return;
+
     if (cameraMode === 'freeroam') {
         switch (e.code) {
             case 'ArrowUp':    case 'KeyW': moveState.forward = true; e.preventDefault(); break;
@@ -550,30 +643,60 @@ function onKeyDown(e) {
             case 'ShiftLeft': case 'ShiftRight': moveState.down = true; e.preventDefault(); break;
         }
     } else if (cameraMode === 'player') {
-        switch (e.code) {
-            case 'ArrowUp':    case 'KeyW': playerInput.forward = true; e.preventDefault(); break;
-            case 'ArrowDown':  case 'KeyS': playerInput.backward = true; e.preventDefault(); break;
-            case 'ArrowLeft':  case 'KeyA': playerInput.left = true; e.preventDefault(); break;
-            case 'ArrowRight': case 'KeyD': playerInput.right = true; e.preventDefault(); break;
-            case 'Space': playerInput.jump = true; e.preventDefault(); break;
-            case 'KeyX': pickupQueued = true; e.preventDefault(); break;
+        if (shootingStance) {
+            // In shooting stance: W/S = aim angle, A/D = turn, X = shoot, C = cancel
+            switch (e.code) {
+                case 'ArrowUp':    case 'KeyW': shootInput.aimUp = true; e.preventDefault(); break;
+                case 'ArrowDown':  case 'KeyS': shootInput.aimDown = true; e.preventDefault(); break;
+                case 'ArrowLeft':  case 'KeyA': shootInput.turnLeft = true; e.preventDefault(); break;
+                case 'ArrowRight': case 'KeyD': shootInput.turnRight = true; e.preventDefault(); break;
+                case 'KeyX': shootQueued = true; e.preventDefault(); break;
+                case 'KeyC': cancelShootQueued = true; e.preventDefault(); break;
+            }
+        } else {
+            switch (e.code) {
+                case 'ArrowUp':    case 'KeyW': playerInput.forward = true; e.preventDefault(); break;
+                case 'ArrowDown':  case 'KeyS': playerInput.backward = true; e.preventDefault(); break;
+                case 'ArrowLeft':  case 'KeyA': playerInput.left = true; e.preventDefault(); break;
+                case 'ArrowRight': case 'KeyD': playerInput.right = true; e.preventDefault(); break;
+                case 'Space': playerInput.jump = true; e.preventDefault(); break;
+                case 'KeyZ': pickupQueued = true; e.preventDefault(); break;
+                case 'KeyX':
+                    // Enter shooting stance if holding ball and grounded
+                    if (basketballData?.heldByPlayer && playerData?.isGrounded) {
+                        shootQueued = true;
+                    }
+                    e.preventDefault();
+                    break;
+            }
         }
     }
 }
 
 function onKeyUp(e) {
-    // Clear both states regardless of mode
+    if (!gameStarted) return;
+
+    // Clear all input states regardless of mode
     switch (e.code) {
-        case 'ArrowUp':    case 'KeyW': moveState.forward = false; playerInput.forward = false; break;
-        case 'ArrowDown':  case 'KeyS': moveState.backward = false; playerInput.backward = false; break;
-        case 'ArrowLeft':  case 'KeyA': moveState.left = false; playerInput.left = false; break;
-        case 'ArrowRight': case 'KeyD': moveState.right = false; playerInput.right = false; break;
+        case 'ArrowUp':    case 'KeyW':
+            moveState.forward = false; playerInput.forward = false;
+            shootInput.aimUp = false; break;
+        case 'ArrowDown':  case 'KeyS':
+            moveState.backward = false; playerInput.backward = false;
+            shootInput.aimDown = false; break;
+        case 'ArrowLeft':  case 'KeyA':
+            moveState.left = false; playerInput.left = false;
+            shootInput.turnLeft = false; break;
+        case 'ArrowRight': case 'KeyD':
+            moveState.right = false; playerInput.right = false;
+            shootInput.turnRight = false; break;
         case 'Space': moveState.up = false; playerInput.jump = false; break;
         case 'ShiftLeft': case 'ShiftRight': moveState.down = false; break;
     }
 }
 
 function onMouseMove(e) {
+    if (!gameStarted) return;
     if (cameraMode !== 'freeroam' || !isPointerLocked) return;
     yaw -= e.movementX * lookSpeed;
     pitch -= e.movementY * lookSpeed;
@@ -590,6 +713,7 @@ document.addEventListener('mousemove', onMouseMove);
 document.addEventListener('pointerlockchange', onPointerLockChange);
 
 renderer.domElement.addEventListener('mousedown', (e) => {
+    if (!gameStarted) return;
     if (cameraMode === 'freeroam' && e.button === 0 && !isPointerLocked) {
         renderer.domElement.requestPointerLock();
     }
@@ -597,13 +721,20 @@ renderer.domElement.addEventListener('mousedown', (e) => {
 
 // ─── Camera Mode Switching ──────────────────────────────────
 function switchCameraMode(mode) {
+    if (!gameStarted) return;
+
     // Hide player when leaving player mode
     if (cameraMode === 'player' && playerData) {
         playerData.group.visible = false;
         playerData.velocity.set(0, 0, 0);
         playerData.velocityY = 0;
         Object.keys(playerInput).forEach(k => playerInput[k] = false);
+        Object.keys(shootInput).forEach(k => shootInput[k] = false);
         pickupQueued = false;
+        shootQueued = false;
+        cancelShootQueued = false;
+        shootingStance = false;
+        shootAngle = 52;
     }
 
     cameraMode = mode;
@@ -656,12 +787,13 @@ function updateModeUI() {
         } else if (cameraMode === 'freeroam') {
             hint.textContent = 'Click to capture mouse | WASD / Arrows to move | Mouse to look | Space up | Shift down | ESC release';
         } else if (cameraMode === 'player') {
-            hint.textContent = 'WASD / Arrows to walk (camera-relative) | Space to jump | X to pick up ball | Click & drag to orbit camera around player | Scroll to zoom | BALL DROP to spawn basketball';
+            hint.textContent = 'WASD / Arrows to walk | Space jump | Z pick up ball | X shoot (hold ball) | In shot stance: W/S aim angle, A/D turn, X shoot, C cancel';
         }
     }
 }
 
 document.addEventListener('keydown', (e) => {
+    if (!gameStarted) return;
     if (e.code === 'Escape' && cameraMode === 'freeroam') {
         if (isPointerLocked) document.exitPointerLock();
     }
@@ -678,7 +810,9 @@ function animate() {
     const delta = smoothedDelta;
     stabilizedElapsed += delta;
 
-    if (cameraMode === 'orbit') {
+    if (startMenuActive) {
+        updateStartMenuCamera(delta);
+    } else if (cameraMode === 'orbit') {
         controls.update();
     } else if (cameraMode === 'freeroam') {
         updateFreeRoam(delta);
@@ -699,10 +833,74 @@ function animate() {
             pickupQueued = false;
         }
 
+        // ── Shooting state machine ────────────────────────
+        if (shootingStance) {
+            // Cancel shooting stance
+            if (cancelShootQueued) {
+                shootingStance = false;
+                if (basketballData) basketballData._shootingStance = false;
+                shootAngle = 52;
+                cancelShootQueued = false;
+                shootQueued = false;
+                Object.keys(shootInput).forEach(k => shootInput[k] = false);
+            }
+            // Ball was lost (dribble collision, etc.)
+            else if (!basketballData?.heldByPlayer) {
+                shootingStance = false;
+                if (basketballData) basketballData._shootingStance = false;
+                shootAngle = 52;
+                shootQueued = false;
+                Object.keys(shootInput).forEach(k => shootInput[k] = false);
+            }
+            // Fire the shot
+            else if (shootQueued) {
+                basketballData._shootingStance = false;
+                shootBasketball(basketballData, playerData, shootAngle);
+                shootingStance = false;
+                shootAngle = 52;
+                shootQueued = false;
+                Object.keys(shootInput).forEach(k => shootInput[k] = false);
+            }
+            else {
+                // Adjust aim angle with W/S
+                if (shootInput.aimUp) {
+                    shootAngle = Math.min(SHOOT_ANGLE_MAX, shootAngle + SHOOT_ANGLE_SPEED * delta);
+                }
+                if (shootInput.aimDown) {
+                    shootAngle = Math.max(SHOOT_ANGLE_MIN, shootAngle - SHOOT_ANGLE_SPEED * delta);
+                }
+
+                // Turn player with A/D (rotate facing angle directly)
+                const turnRate = 2.2; // radians per second
+                if (shootInput.turnLeft) {
+                    playerData.facingAngle -= turnRate * delta;
+                    playerData.group.rotation.y = playerData.facingAngle;
+                }
+                if (shootInput.turnRight) {
+                    playerData.facingAngle += turnRate * delta;
+                    playerData.group.rotation.y = playerData.facingAngle;
+                }
+            }
+
+            // Zero movement input so player stands still
+            Object.keys(playerInput).forEach(k => playerInput[k] = false);
+        } else if (shootQueued && basketballData?.heldByPlayer && playerData?.isGrounded) {
+            // Enter shooting stance
+            shootingStance = true;
+            basketballData._shootingStance = true;
+            shootQueued = false;
+            // Stop the player
+            playerData.velocity.set(0, 0, 0);
+            Object.keys(playerInput).forEach(k => playerInput[k] = false);
+        } else {
+            shootQueued = false;
+        }
+
         const carryState = basketballData?.heldByPlayer
             ? {
                 holding: true,
-                dribbling: !!basketballData.dribblingByPlayer,
+                shooting: shootingStance,
+                dribbling: !shootingStance && !!basketballData.dribblingByPlayer,
                 dribblePhase: basketballData.dribblePhase || 0
             }
             : null;
@@ -750,7 +948,9 @@ window.switchCameraMode = switchCameraMode;
 window.toggleTransparentHelpers = toggleTransparentHelpers;
 window.toggleDayNight = toggleDayNight;
 window.dropBall = dropBall;
+window.startGame = startGame;
 
 // ─── Start ──────────────────────────────────────────────────
+setGameplayHudVisible(false);
 buildScene();
 animate();
