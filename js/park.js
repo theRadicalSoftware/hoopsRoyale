@@ -7,18 +7,20 @@ export function createPark(scene) {
     const parkGroup = new THREE.Group();
     parkGroup.name = 'park';
     const parkColliders = [];
+    const parkSeats = [];
 
     createFencing(parkGroup, parkColliders);
     createTrees(parkGroup);
-    createBenches(parkGroup, parkColliders);
+    createBenches(parkGroup, parkColliders, parkSeats);
     createTrashCans(parkGroup, parkColliders);
     createLampPosts(parkGroup);
     createPathways(parkGroup);
-    createBleachers(parkGroup, parkColliders);
+    createBleachers(parkGroup, parkColliders, parkSeats);
     createDrinkingFountain(parkGroup);
     createScatteredDetails(parkGroup);
 
     scene.userData.parkColliders = parkColliders;
+    scene.userData.parkSeats = parkSeats;
     scene.add(parkGroup);
     return parkGroup;
 }
@@ -507,7 +509,7 @@ function createPineTree(group, x, z, scale) {
 }
 
 // ─── Park Benches ───────────────────────────────────────────
-function createBenches(group, colliders) {
+function createBenches(group, colliders, seats) {
     const benchPositions = [
         // Inside fence, on the blacktop edge, facing the court
         { x: -10.5, z: -6, rot: Math.PI / 2 },
@@ -519,11 +521,11 @@ function createBenches(group, colliders) {
     ];
 
     for (const { x, z, rot } of benchPositions) {
-        createBench(group, x, z, rot, colliders);
+        createBench(group, x, z, rot, colliders, seats);
     }
 }
 
-function createBench(group, x, z, rotation, colliders) {
+function createBench(group, x, z, rotation, colliders, seats) {
     const bench = new THREE.Group();
 
     const woodMat = new THREE.MeshStandardMaterial({
@@ -613,6 +615,22 @@ function createBench(group, x, z, rotation, colliders) {
         yMin: 0,
         yMax: 1.15
     });
+
+    // Sit anchors (two spots per bench)
+    const seatOffsets = [-0.45, 0.45];
+    const seatLocalZ = 0.02;
+    const seatY = seatHeight + 0.02;
+    for (const localX of seatOffsets) {
+        const worldX = x + localX * Math.cos(rotation) + seatLocalZ * Math.sin(rotation);
+        const worldZ = z - localX * Math.sin(rotation) + seatLocalZ * Math.cos(rotation);
+        seats.push({
+            type: 'bench',
+            x: worldX,
+            y: seatY,
+            z: worldZ,
+            facing: rotation
+        });
+    }
 }
 
 // ─── Trash Cans ─────────────────────────────────────────────
@@ -982,7 +1000,7 @@ function addPathSegment(group, mat, x, y, z, width, length) {
 }
 
 // ─── Small Bleachers / Spectator Area ───────────────────────
-function createBleachers(group, colliders) {
+function createBleachers(group, colliders, seats) {
     const metalMat = new THREE.MeshStandardMaterial({
         color: 0x555555,
         roughness: 0.4,
@@ -1060,6 +1078,22 @@ function createBleachers(group, colliders) {
             yMin: 0,
             yMax: height
         });
+
+        // Sit anchors (front row spots)
+        const seatLocalY = 0.35 + 0.04;
+        const seatLocalZ = 0.03;
+        const seatOffsets = p.width >= 5 ? [-1.0, 1.0] : [-0.6, 0.6];
+        for (const localX of seatOffsets) {
+            const worldX = p.x + localX * Math.cos(p.rotY) + seatLocalZ * Math.sin(p.rotY);
+            const worldZ = p.z - localX * Math.sin(p.rotY) + seatLocalZ * Math.cos(p.rotY);
+            seats.push({
+                type: 'bleacher',
+                x: worldX,
+                y: seatLocalY,
+                z: worldZ,
+                facing: p.rotY
+            });
+        }
     }
 }
 

@@ -13,7 +13,11 @@ const WALL_BOUNCE = 0.58;
 const GROUND_FRICTION = 6.0;
 const ROLL_DAMP = 2.4;
 const COLLIDER_BROADPHASE_PAD = 0.35;
+const RIM_COLLISION_TUBE = 0.03;   // effective rim tube for collision (forgiving but realistic)
+const RIM_BOUNCE = 0.55;          // restitution for rim hits
 const PICKUP_RADIUS = 0.72;
+const PICKUP_RADIUS_ASSIST = 1.02;
+const PICKUP_VERTICAL_ASSIST = 1.55;
 const HOLD_CHEST_HEIGHT = 1.18;
 const HOLD_HAND_INSET = 0.018;
 const DRIBBLE_HAND_SIDE = 0.018;
@@ -41,6 +45,8 @@ const SHOT_MAX_ANGLE = 70;              // degrees — highest arc
 const SHOT_DEFAULT_ANGLE = 52;          // degrees — comfortable mid-range arc
 const SHOT_ANGLE_SPEED = 28;            // degrees per second when adjusting
 const SHOT_BACKSPIN = 8.0;              // radians per second of visual backspin
+const SHOT_POWER_MIN = 0.55;
+const SHOT_POWER_MAX = 1.15;
 
 const tmpNormal = new THREE.Vector3();
 const tmpTangent = new THREE.Vector3();
@@ -85,7 +91,12 @@ export function createBasketball(scene) {
         grounded: false,
         velocity: new THREE.Vector3(),
         prevPosition: new THREE.Vector3(),
-        idleFrames: 0
+        idleFrames: 0,
+        _dunkControl: false,
+        _ignoreRimTimer: 0,
+        _ignorePlayerTimer: 0,
+        _ignorePlayerRef: null,
+        heldByPlayerData: null
     };
 }
 
@@ -95,8 +106,14 @@ export function dropBasketballAtCenter(ball) {
     ball.mesh.visible = true;
     ball.active = true;
     ball.heldByPlayer = false;
+    ball.heldByPlayerData = null;
     ball.dribblingByPlayer = false;
     ball._shootingStance = false;
+    ball._passingStance = false;
+    ball._dunkControl = false;
+    ball._ignoreRimTimer = 0;
+    ball._ignorePlayerTimer = 0;
+    ball._ignorePlayerRef = null;
     ball.dribblePhase = 0;
     ball.sleeping = false;
     ball.grounded = false;
@@ -117,17 +134,23 @@ export function tryPickUpBasketball(ball, playerData) {
     if (!ball.active || !ball.mesh.visible || ball.heldByPlayer) return false;
 
     const playerPos = playerData.group.position;
+    const assistActive = !!playerData._pickupAssistActive;
+    const pickupRadius = assistActive ? PICKUP_RADIUS_ASSIST : PICKUP_RADIUS;
     const dx = ball.mesh.position.x - playerPos.x;
     const dz = ball.mesh.position.z - playerPos.z;
-    if (dx * dx + dz * dz > PICKUP_RADIUS * PICKUP_RADIUS) return false;
+    if (dx * dx + dz * dz > pickupRadius * pickupRadius) return false;
 
     const groundY = getPlayerGroundY(playerData);
     const verticalGap = Math.abs(ball.mesh.position.y - (groundY + 0.95));
-    if (verticalGap > 1.35) return false;
+    if (verticalGap > (assistActive ? PICKUP_VERTICAL_ASSIST : 1.35)) return false;
 
     ball.heldByPlayer = true;
+    ball.heldByPlayerData = playerData;
     ball.dribblingByPlayer = false;
     ball.dribblePhase = 0;
+    ball._dunkControl = false;
+    ball._ignoreRimTimer = 0;
+    ball._ignorePlayerTimer = 0;
     ball.sleeping = false;
     ball.grounded = false;
     ball.idleFrames = 0;
@@ -138,23 +161,42 @@ export function tryPickUpBasketball(ball, playerData) {
     return true;
 }
 
-export function updateBasketball(ball, delta, environmentColliders, playerData = null) {
+export function updateBasketball(ball, delta, environmentColliders, playerData = null, allPlayers = null) {
     if (!ball || !ball.active || !ball.mesh.visible) return;
 
     if (ball.heldByPlayer) {
-        if (!playerData?.group?.visible) {
-            releaseHeldBall(ball, playerData);
+        if (ball._dunkControl) {
+            ball.velocity.set(0, 0, 0);
+            ball.sleeping = false;
+            ball.grounded = false;
+            ball.idleFrames = 0;
+            ball.prevPosition.copy(ball.mesh.position);
+            return;
+        }
+        // Use the actual holder for held-ball updates
+        const holder = ball.heldByPlayerData || playerData;
+        if (!holder?.group?.visible) {
+            releaseHeldBall(ball, holder);
         } else {
-            const releasedFromCollision = updateHeldByPlayer(ball, playerData, delta, environmentColliders);
+            const releasedFromCollision = updateHeldByPlayer(ball, holder, delta, environmentColliders);
             if (!releasedFromCollision) return;
         }
     }
 
+    if (ball._ignoreRimTimer > 0) ball._ignoreRimTimer = Math.max(0, ball._ignoreRimTimer - delta);
+    if (ball._ignorePlayerTimer > 0) ball._ignorePlayerTimer = Math.max(0, ball._ignorePlayerTimer - delta);
+
     if (ball.sleeping) {
-        if (!playerData?.group?.visible) return;
-        const dx = playerData.group.position.x - ball.mesh.position.x;
-        const dz = playerData.group.position.z - ball.mesh.position.z;
-        if (dx * dx + dz * dz > 1.44) return;
+        // Wake if ANY player is nearby
+        const players = allPlayers || (playerData ? [playerData] : []);
+        let shouldWake = false;
+        for (const pd of players) {
+            if (!pd?.group?.visible) continue;
+            const dx = pd.group.position.x - ball.mesh.position.x;
+            const dz = pd.group.position.z - ball.mesh.position.z;
+            if (dx * dx + dz * dz <= 1.44) { shouldWake = true; break; }
+        }
+        if (!shouldWake) return;
         ball.sleeping = false;
     }
 
@@ -177,7 +219,11 @@ export function updateBasketball(ball, delta, environmentColliders, playerData =
         ball.mesh.position.addScaledVector(ball.velocity, step);
         resolveFloor(ball, step);
         resolveEnvironmentCollisions(ball, environmentColliders);
-        resolvePlayerCollision(ball, playerData);
+        // Resolve collision against all players
+        const players = allPlayers || (playerData ? [playerData] : []);
+        for (const pd of players) {
+            resolvePlayerCollision(ball, pd);
+        }
     }
 
     applyRollingRotation(ball);
@@ -218,6 +264,9 @@ function resolveEnvironmentCollisions(ball, colliders, hitInfo = null) {
     let hadCollision = false;
 
     for (const collider of colliders) {
+        // Ball passes through the net — it's visual only for the ball
+        if (collider.isNetVolume) continue;
+
         if (top <= collider.yMin || bottom >= collider.yMax) continue;
 
         ensureBallBroadphase(collider);
@@ -225,6 +274,16 @@ function resolveEnvironmentCollisions(ball, colliders, hitInfo = null) {
         const bdz = p.z - collider._ballCz;
         const broadR = collider._ballBr + r;
         if (bdx * bdx + bdz * bdz > broadR * broadR) continue;
+
+        // Rim uses torus collision — ball passes through the open center
+        if (collider.isRim) {
+            if (ball._ignoreRimTimer > 0) continue;
+            if (resolveRimTorusCollision(ball, collider)) {
+                hadCollision = true;
+                if (hitInfo) { hitInfo.hit = true; hitInfo.nx = 0; hitInfo.nz = 0; }
+            }
+            continue;
+        }
 
         if (collider.type === 'cylinder') {
             const dx = p.x - collider.x;
@@ -325,6 +384,8 @@ function ensureBallBroadphase(collider) {
 
 function resolvePlayerCollision(ball, playerData) {
     if (!playerData?.group?.visible) return;
+    if (ball._ignorePlayerTimer > 0 && ball._ignorePlayerRef === playerData) return;
+    if (ball._ignorePlayerTimer > 0 && !ball._ignorePlayerRef) return;
 
     const p = ball.mesh.position;
     const playerPos = playerData.group.position;
@@ -355,11 +416,12 @@ function resolvePlayerCollision(ball, playerData) {
     const playerVx = playerData.velocity?.x || 0;
     const playerVz = playerData.velocity?.z || 0;
     const playerAlongN = playerVx * nx + playerVz * nz;
-    const impulse = Math.max(0, playerAlongN) + 1.1;
+    const assistActive = !!playerData?._pickupAssistActive;
+    const impulse = Math.max(0, playerAlongN) + (assistActive ? 0.35 : 1.1);
 
     ball.velocity.x += nx * impulse;
     ball.velocity.z += nz * impulse;
-    ball.velocity.y += 0.15;
+    ball.velocity.y += assistActive ? 0.05 : 0.15;
     ball.sleeping = false;
 }
 
@@ -380,6 +442,83 @@ function bounceAgainstNormal(ball, nx, nz, restitution) {
     ball.velocity.z = tmpTangent.z + tmpNormal.z * nowVn;
 
     ball.sleeping = false;
+}
+
+/**
+ * 3D bounce — reflects velocity off an arbitrary surface normal (used for rim hits).
+ * Unlike bounceAgainstNormal which is XZ-only, this handles the full Y component
+ * so balls hitting the top/side of the rim respond correctly.
+ */
+function bounceAgainstNormal3D(ball, nx, ny, nz, restitution) {
+    const vn = ball.velocity.x * nx + ball.velocity.y * ny + ball.velocity.z * nz;
+    if (vn < 0) {
+        ball.velocity.x -= (1 + restitution) * vn * nx;
+        ball.velocity.y -= (1 + restitution) * vn * ny;
+        ball.velocity.z -= (1 + restitution) * vn * nz;
+    }
+    ball.sleeping = false;
+}
+
+/**
+ * Torus collision — ball vs rim ring.
+ *
+ * The rim is a ring (torus) with a major radius (rimRingRadius) and a small
+ * tube radius (RIM_COLLISION_TUBE). The ball should bounce off the metal tube
+ * but pass freely through the open center of the ring.
+ *
+ * Math: find the closest point on the rim circle (a circle in 3D at y = rimY),
+ * then check sphere-vs-sphere between the ball and a virtual sphere at that
+ * closest point with radius = RIM_COLLISION_TUBE.
+ */
+function resolveRimTorusCollision(ball, collider) {
+    const p = ball.mesh.position;
+    const r = ball.radius;
+    const rimY = (collider.yMin + collider.yMax) * 0.5;
+    const ringR = collider.rimRingRadius;
+
+    // Vector from rim center to ball in XZ plane
+    const dx = p.x - collider.x;
+    const dz = p.z - collider.z;
+    const distXZ = Math.hypot(dx, dz);
+
+    // Closest point on the rim ring circle to the ball center
+    let closestX, closestZ;
+    if (distXZ > 1e-6) {
+        closestX = collider.x + (dx / distXZ) * ringR;
+        closestZ = collider.z + (dz / distXZ) * ringR;
+    } else {
+        // Ball directly above ring center — pick any point on the ring
+        closestX = collider.x + ringR;
+        closestZ = collider.z;
+    }
+
+    // 3D distance from ball center to closest point on ring
+    const ddx = p.x - closestX;
+    const ddy = p.y - rimY;
+    const ddz = p.z - closestZ;
+    const distToRing = Math.hypot(ddx, ddy, ddz);
+
+    const combined = r + RIM_COLLISION_TUBE;
+    if (distToRing >= combined) return false;
+
+    // Collision — compute normal pointing from ring surface toward ball
+    let nx, ny, nz;
+    if (distToRing > 1e-6) {
+        nx = ddx / distToRing;
+        ny = ddy / distToRing;
+        nz = ddz / distToRing;
+    } else {
+        // Exactly on the ring — push upward
+        nx = 0; ny = 1; nz = 0;
+    }
+
+    const push = combined - distToRing + 1e-4;
+    p.x += nx * push;
+    p.y += ny * push;
+    p.z += nz * push;
+
+    bounceAgainstNormal3D(ball, nx, ny, nz, RIM_BOUNCE);
+    return true;
 }
 
 function applyRollingRotation(ball) {
@@ -433,11 +572,14 @@ function updateHeldByPlayer(ball, playerData, delta, environmentColliders = null
     if (tmpForward.lengthSq() < 1e-8) tmpForward.set(0, 0, 1);
     tmpForward.normalize();
     tmpRight.set(tmpForward.z, 0, -tmpForward.x).normalize();
-    playerData.group.updateMatrixWorld(true);
+    // Update only the dirty matrices (not forced recursive) — renderer will
+    // handle the rest; localToWorld in getHandWorldPosition only needs the
+    // elbow's chain to be current, which updateMatrixWorld() handles lazily.
+    playerData.group.updateMatrixWorld();
 
     getHandWorldPosition(playerData, 'right', tmpRightHand, playerPos, groundY);
     getHandWorldPosition(playerData, 'left', tmpLeftHand, playerPos, groundY);
-    selectPlayerRightHand(tmpChosenDribbleHand, tmpRightHand, tmpLeftHand, playerPos, tmpRight);
+    selectPlayerRightHand(tmpChosenDribbleHand, tmpRightHand, tmpLeftHand, playerPos, tmpRight, playerData);
     let phase01 = 0;
 
     // ── Shooting stance hold ──────────────────────────
@@ -448,6 +590,25 @@ function updateHeldByPlayer(ball, playerData, delta, environmentColliders = null
             playerPos.x + tmpForward.x * 0.15,
             shootHoldY,
             playerPos.z + tmpForward.z * 0.15
+        );
+
+        const follow = snap ? 1 : (1 - Math.exp(-HOLD_SMOOTH_IDLE * dt));
+        ball.mesh.position.lerp(tmpHoldTarget, follow);
+        ball.velocity.set(0, 0, 0);
+        ball.sleeping = false;
+        ball.grounded = false;
+        ball.idleFrames = 0;
+        ball.prevPosition.copy(ball.mesh.position);
+        return false;
+    }
+
+    // ── Passing stance hold — chest level ──────────────
+    if (ball._passingStance) {
+        const passHoldY = groundY + HOLD_CHEST_HEIGHT;
+        tmpHoldTarget.set(
+            playerPos.x + tmpForward.x * 0.18,
+            passHoldY,
+            playerPos.z + tmpForward.z * 0.18
         );
 
         const follow = snap ? 1 : (1 - Math.exp(-HOLD_SMOOTH_IDLE * dt));
@@ -589,10 +750,13 @@ function getHandWorldPosition(playerData, side, out, playerPos, groundY) {
     return out;
 }
 
-function selectPlayerRightHand(out, rightHand, leftHand, playerPos, rightDir) {
+function selectPlayerRightHand(out, rightHand, leftHand, playerPos, rightDir, playerData) {
     const rightDot = tmpHandSide.copy(rightHand).sub(playerPos).dot(rightDir);
     const leftDot = tmpHandSide.copy(leftHand).sub(playerPos).dot(rightDir);
-    out.copy(rightDot >= leftDot ? rightHand : leftHand);
+    const useRight = rightDot >= leftDot;
+    out.copy(useRight ? rightHand : leftHand);
+    // Tag which hand is dribbling so the punch system can use the other
+    if (playerData) playerData._dribbleHand = useRight ? 'right' : 'left';
     return out;
 }
 
@@ -638,8 +802,13 @@ function releaseHeldBall(ball, playerData = null, preserveVelocity = false) {
     if (!ball.heldByPlayer) return;
 
     ball.heldByPlayer = false;
+    ball.heldByPlayerData = null;
+    ball._dunkControl = false;
+    ball._ignoreRimTimer = 0;
+    ball._ignorePlayerTimer = 0;
     ball.dribblingByPlayer = false;
     ball._shootingStance = false;
+    ball._passingStance = false;
     ball.idleFrames = 0;
     ball.grounded = false;
     ball.sleeping = false;
@@ -704,10 +873,12 @@ function getTargetRimPosition(playerData) {
  * @param {object} ball - ball state object
  * @param {object} playerData - player state object
  * @param {number} launchAngleDeg - launch angle in degrees from horizontal
+ * @param {number} powerMultiplier - shot force multiplier from the power meter
  * @returns {boolean} true if shot was released successfully
  */
-export function shootBasketball(ball, playerData, launchAngleDeg) {
+export function shootBasketball(ball, playerData, launchAngleDeg, powerMultiplier = 1.0) {
     if (!ball || !ball.heldByPlayer || !playerData) return false;
+    const shotPower = THREE.MathUtils.clamp(powerMultiplier, SHOT_POWER_MIN, SHOT_POWER_MAX);
 
     const rim = getTargetRimPosition(playerData);
     const groundY = getPlayerGroundY(playerData);
@@ -741,14 +912,14 @@ export function shootBasketball(ball, playerData, launchAngleDeg) {
     const denominator = horizontalDist * tanA - dy;
     if (denominator <= 0.01) {
         // Angle too flat to reach the target — just lob it forward
-        ball.velocity.set(fwdX * 5, 6, fwdZ * 5);
+        ball.velocity.set(fwdX * 5 * shotPower, 6 * shotPower, fwdZ * 5 * shotPower);
         releaseHeldBall(ball, playerData, true);
         return true;
     }
 
     const speedSq = (g * horizontalDist * horizontalDist) / (2 * cosA * cosA * denominator);
     if (speedSq <= 0) {
-        ball.velocity.set(fwdX * 5, 6, fwdZ * 5);
+        ball.velocity.set(fwdX * 5 * shotPower, 6 * shotPower, fwdZ * 5 * shotPower);
         releaseHeldBall(ball, playerData, true);
         return true;
     }
@@ -757,10 +928,11 @@ export function shootBasketball(ball, playerData, launchAngleDeg) {
 
     // Cap speed to prevent absurd launches from very close range
     const cappedSpeed = Math.min(speed, 18);
+    const poweredSpeed = Math.min(cappedSpeed * shotPower, 20);
 
     // Decompose into 3D velocity using PLAYER FACING direction
-    const vHorizontal = cappedSpeed * cosA;
-    const vy = cappedSpeed * Math.sin(angleRad);
+    const vHorizontal = poweredSpeed * cosA;
+    const vy = poweredSpeed * Math.sin(angleRad);
 
     // Aim correction: blend facing direction with actual rim direction
     // This gives the player's facing direction priority but gently corrects
@@ -812,6 +984,109 @@ function sampleFloorY(x, z) {
 
     // Park base ground plane
     return -0.02;
+}
+
+// ─── Passing ─────────────────────────────────────────────────
+const PASS_CHEST_HEIGHT = 1.18;
+const TEAMMATE_CATCH_RADIUS = 0.65;
+
+export function passBallToTarget(ball, fromPlayerData, targetPosition, passType) {
+    if (!ball || !ball.heldByPlayer || !fromPlayerData) return false;
+
+    const facing = fromPlayerData.facingAngle || 0;
+    const fwdX = Math.sin(facing);
+    const fwdZ = Math.cos(facing);
+    const groundY = getPlayerGroundY(fromPlayerData);
+    const releaseY = groundY + PASS_CHEST_HEIGHT;
+
+    const px = fromPlayerData.group.position.x;
+    const pz = fromPlayerData.group.position.z;
+
+    // Release point slightly in front
+    const releaseX = px + fwdX * 0.25;
+    const releaseZ = pz + fwdZ * 0.25;
+
+    const dx = targetPosition.x - releaseX;
+    const dy = targetPosition.y - releaseY;
+    const dz = targetPosition.z - releaseZ;
+    const horizontalDist = Math.hypot(dx, dz);
+
+    if (passType === 'chest') {
+        // Quick direct pass — fast, slight loft
+        const speed = THREE.MathUtils.clamp(horizontalDist * 2.2 + 4, 6, 14);
+        const dirX = horizontalDist > 0.1 ? dx / horizontalDist : fwdX;
+        const dirZ = horizontalDist > 0.1 ? dz / horizontalDist : fwdZ;
+        const loft = 0.6 + horizontalDist * 0.08;
+
+        ball.velocity.set(dirX * speed, loft + dy * 0.3, dirZ * speed);
+    } else {
+        // Aimed pass — uses player facing direction (like shooting)
+        const speed = THREE.MathUtils.clamp(horizontalDist * 1.8 + 5, 7, 16);
+        const loft = 0.4 + horizontalDist * 0.06;
+
+        ball.velocity.set(fwdX * speed, loft + dy * 0.25, fwdZ * speed);
+    }
+
+    // Position at release point
+    ball.mesh.position.set(releaseX, releaseY, releaseZ);
+
+    // Ignore the passer so ball clears them before collision kicks in
+    ball._ignorePlayerRef = fromPlayerData;
+    releaseHeldBall(ball, fromPlayerData, true);
+    ball._ignorePlayerTimer = 0.45;
+
+    return true;
+}
+
+export function tryTeammateCatch(ball, teammateData) {
+    if (!ball || !ball.active || !ball.mesh.visible) return false;
+    if (ball.heldByPlayer) return false;
+    if (!teammateData?.group?.visible) return false;
+    // Don't catch if this player just threw the ball
+    if (ball._ignorePlayerTimer > 0 && ball._ignorePlayerRef === teammateData) return false;
+
+    const bPos = ball.mesh.position;
+    const tPos = teammateData.group.position;
+    const groundY = getPlayerGroundY(teammateData);
+
+    // Check XZ distance
+    const dx = bPos.x - tPos.x;
+    const dz = bPos.z - tPos.z;
+    if (dx * dx + dz * dz > TEAMMATE_CATCH_RADIUS * TEAMMATE_CATCH_RADIUS) return false;
+
+    // Check vertical — ball should be between knees and head
+    const ballRelY = bPos.y - groundY;
+    if (ballRelY < 0.3 || ballRelY > 2.0) return false;
+
+    // Catch it
+    ball.heldByPlayer = true;
+    ball.heldByPlayerData = teammateData;
+    ball.dribblingByPlayer = false;
+    ball.dribblePhase = 0;
+    ball._dunkControl = false;
+    ball._ignoreRimTimer = 0;
+    ball._ignorePlayerTimer = 0;
+    ball._ignorePlayerRef = null;
+    ball.sleeping = false;
+    ball.grounded = false;
+    ball.idleFrames = 0;
+    ball.velocity.set(0, 0, 0);
+
+    updateHeldByPlayer(ball, teammateData, 1 / 60, null, true);
+    ball.prevPosition.copy(ball.mesh.position);
+    return true;
+}
+
+/**
+ * Force-drop the ball from whoever is holding it (e.g. when punched).
+ * Ball pops up and away in the given direction.
+ */
+export function forceDropBall(ball, hitDirX, hitDirZ) {
+    if (!ball || !ball.heldByPlayer) return;
+    const holder = ball.heldByPlayerData;
+    releaseHeldBall(ball, holder, false);
+    // Give it a pop-up and push in the hit direction
+    ball.velocity.set(hitDirX * 2.5, 3.0, hitDirZ * 2.5);
 }
 
 function createBallTexture() {

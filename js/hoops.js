@@ -85,23 +85,28 @@ function addHoopColliders(colliders, side, baselineZ, backboardCenterZ, backboar
     });
 
     // Rim ring collision volume.
+    // Tagged isRim so ball.js uses torus collision (ball passes through center).
+    // Player.js still treats it as a solid cylinder (player can't fit through anyway).
     colliders.push({
         type: 'cylinder',
         x: 0,
         z: rimCenterZ,
         radius: RIM_RADIUS + 0.08,
-        yMin: RIM_HEIGHT - 0.09,
-        yMax: RIM_HEIGHT + 0.09
+        yMin: RIM_HEIGHT - 0.15,
+        yMax: RIM_HEIGHT + 0.15,
+        isRim: true,
+        rimRingRadius: RIM_RADIUS
     });
 
-    // Net volume so jump/player body can't pass through the chain net.
+    // Net volume — blocks the player body but the ball passes through freely.
     colliders.push({
         type: 'cylinder',
         x: 0,
         z: rimCenterZ,
         radius: RIM_RADIUS * 0.82,
         yMin: RIM_HEIGHT - 0.48,
-        yMax: RIM_HEIGHT - 0.02
+        yMax: RIM_HEIGHT - 0.02,
+        isNetVolume: true
     });
 
     // Neck + mount bracket zone connecting rim to board.

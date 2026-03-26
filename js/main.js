@@ -5,8 +5,8 @@ import { createHoops } from './hoops.js';
 import { createPark } from './park.js';
 import { createCity } from './city.js';
 import { createLighting } from './lighting.js';
-import { createPlayer, updatePlayer } from './player.js';
-import { createBasketball, dropBasketballAtCenter, tryPickUpBasketball, updateBasketball, shootBasketball } from './ball.js';
+import { createPlayer, updatePlayer, getPunchFistPosition, applyStun, PUNCH_HIT_RADIUS } from './player.js';
+import { createBasketball, dropBasketballAtCenter, tryPickUpBasketball, updateBasketball, shootBasketball, passBallToTarget, tryTeammateCatch, forceDropBall } from './ball.js';
 
 // ─── Renderer ───────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -95,6 +95,8 @@ let moonGlowMesh = null;
 let playerData = null;
 let basketballData = null;
 let pickupQueued = false;
+let pickupAssistTimer = 0;
+let sitToggleQueued = false;
 let shootQueued = false;
 let cancelShootQueued = false;
 let shootingStance = false;   // true when player is in aiming/shooting stance
@@ -102,13 +104,120 @@ let shootAngle = 52;          // current launch angle in degrees
 const SHOOT_ANGLE_MIN = 38;
 const SHOOT_ANGLE_MAX = 70;
 const SHOOT_ANGLE_SPEED = 28; // degrees per second
+let shootTurnVelocity   = 0;          // current rotational velocity in stance
+const SHOOT_TURN_MAX    = 1.6;        // rad/s — max aiming turn speed
+const SHOOT_TURN_ACCEL  = 8.0;        // ramp-up rate (smooth start)
+const SHOOT_TURN_DECEL  = 14.0;       // ramp-down rate (quick, precise stop)
+
+// ─── Pickup Assist ───────────────────────────────────────
+const PICKUP_ASSIST_DURATION = 0.24;
+const PICKUP_ASSIST_RADIUS = 1.08;
+const PICKUP_ASSIST_PULL = 13.0;
+
+// ─── Dunk System ─────────────────────────────────────────
+const DUNK_TRIGGER_RADIUS = 1.28;
+const DUNK_MIN_HAND_HEIGHT = 2.5;
+const DUNK_APPROACH_TIME = 0.16;
+const DUNK_SLAM_TIME = 0.14;
+const DUNK_HANG_TIME = 0.44;
+const DUNK_RELEASE_TIME = 0.18;
+const DUNK_BALL_RELEASE_DROP = 0.5;
+const DUNK_BALL_RELEASE_SPEED_Y = -3.6;
+let dunkState = null;
+
+// ─── Seating System ───────────────────────────────────────
+const SIT_INTERACT_RADIUS = 1.45;
+const SIT_ENTER_TIME = 0.26;
+const SIT_EXIT_TIME = 0.22;
+const SIT_ROOT_OFFSET = 0.96;
+let sitState = null;
+
+// ─── Teammate System ─────────────────────────────────────
+const teammates = [];
+const MAX_TEAMMATES = 3;
+let passQueued = false;
+let passingStance = false;
+let passTargetTeammate = null;
+let passingLine = null;
+let passLineOpacity = 0;
+const PASS_CLOSE_RADIUS = 5.0;
+const PASS_LINE_FADE_IN = 8.0;
+const PASS_LINE_FADE_OUT = 12.0;
+const TEAMMATE_NUMBERS = [5, 11, 32];
+
+// ─── Opponent System ─────────────────────────────────────
+const opponents = [];
+const MAX_OPPONENTS = 3;
+const OPPONENT_JERSEY_COLOR = 0x2266cc;
+const OPPONENT_NUMBERS = [3, 7, 24];
+const OPPONENT_COLLIDER_RADIUS = 0.28;
+
+// ─── Shooting Power Meter ────────────────────────────────
+const POWER_METER_MIN_MULT = 0.55;
+const POWER_METER_MAX_MULT = 1.15;
+const POWER_METER_CYCLES_PER_SEC = 1.0;
+const POWER_METER_FADE_IN = 8.0;
+const POWER_METER_FADE_OUT = 12.0;
+const POWER_METER_LOCK_HOLD = 0.11;
+let shotPowerMultiplier = 1.0;
+let powerMeterPhase = 0;
+let powerMeterNorm = 0;
+let powerMeterOpacity = 0;
+let powerMeterLockTimer = 0;
+let powerMeterLockedNorm = 0;
+let powerMeterLockedMult = 1.0;
+
+// ─── Scoring ──────────────────────────────────────────────
+const SHOT_POINTS = 2;
+const SCORE_ENTRY_PLANE_PAD = 0.04;
+const SCORE_CONFIRM_DROP = 0.28;
+const SCORE_COOLDOWN = 0.35;
+const SCORE_PENDING_MAX_TIME = 1.1;
+let totalScore = 0;
+let shotsMade = 0;
+let shotsAttempted = 0;
+let scoreCooldown = 0;
+let pendingMake = null; // { rim, elapsed }
+let scorePrevBallValid = false;
+
+// ─── Shooting Arc Visualization ─────────────────────────────
+// Ball-physics constants mirrored from ball.js for trajectory prediction
+const ARC_GRAVITY       = -11.5;
+const ARC_RIM_HEIGHT    = 3.048;
+const ARC_HALF_COURT    = 14.325;
+const ARC_BB_FROM_BL    = 1.22;
+const ARC_RIM_FROM_BB   = 0.15;
+const ARC_RIM_RADIUS    = 0.2286;
+const ARC_RELEASE_H     = 2.15;
+const ARC_NUM_POINTS    = 60;
+let shootingArcLine     = null;
+let arcOpacity          = 0;         // animated 0→1 on stance enter
+const ARC_FADE_IN_RATE  = 6.0;      // per second
+const ARC_FADE_OUT_RATE = 10.0;     // per second
+
 let hoopColliders = [];
 let parkColliders = [];
+let parkSeats = [];
 let playerColliders = [];
+let rimSensors = [];
 const playerInput = { forward: false, backward: false, left: false, right: false, jump: false };
 const shootInput = { aimUp: false, aimDown: false, turnLeft: false, turnRight: false };
+
+// ─── Zero-allocation input reset helpers ────────────────────
+function resetPlayerInput() { playerInput.forward = playerInput.backward = playerInput.left = playerInput.right = playerInput.jump = false; }
+function resetShootInput() { shootInput.aimUp = shootInput.aimDown = shootInput.turnLeft = shootInput.turnRight = false; }
+function resetMoveState() { moveState.forward = moveState.backward = moveState.left = moveState.right = moveState.up = moveState.down = false; }
 const animatedNets = [];
 const animatedLeaves = [];
+const cachedWindowLit = [];
+const cachedWindowDark = [];
+const cachedLampBulbs = [];
+const cachedLights = [];  // { light, role }
+const cachedMoonChildren = [];  // { mesh, type: 'crater'|'halo'|'glow' }
+const cachedSunChildren = [];   // child meshes of sun
+
+// ─── Persistent carryState (avoids per-frame object allocation) ──
+const _carryState = { holding: false, shooting: false, dribbling: false, dribblePhase: 0, dunking: false, hanging: false, seated: false, seatSettled: false };
 
 const freeRoamForward = new THREE.Vector3();
 const freeRoamRight = new THREE.Vector3();
@@ -119,6 +228,12 @@ const playerCameraTarget = new THREE.Vector3();
 const worldUp = new THREE.Vector3(0, 1, 0);
 const playerMoveForward = new THREE.Vector3();
 const playerMoveRight = new THREE.Vector3();
+const scorePrevBallPos = new THREE.Vector3();
+const pickupAssistTarget = new THREE.Vector3();
+const dunkTmpInward = new THREE.Vector3();
+const dunkTmpRimDir = new THREE.Vector3();
+const sitTargetPos = new THREE.Vector3();
+const sitExitTarget = new THREE.Vector3();
 const playerMoveBasis = { forward: playerMoveForward, right: playerMoveRight };
 let smoothedDelta = 1 / 60;
 let stabilizedElapsed = 0;
@@ -129,35 +244,68 @@ const startOrbitCenter = new THREE.Vector3(0, 1.15, 0);
 let startOrbitRadius = 34;
 let startOrbitAngle = 0;
 let startOrbitHeight = 13.5;
+let startOrbitBaseAngle = 0;   // angle at the moment the menu opened
+let startOrbitElapsed = 0;     // time since menu opened (drives orbit)
+const startOrbitCamPos = new THREE.Vector3();  // smoothed camera position
 
 const startMenu = document.getElementById('start-menu');
 const uiOverlay = document.getElementById('ui-overlay');
 const uiButtons = document.getElementById('ui-buttons');
 const controlsHint = document.getElementById('controls-hint');
+const scoreHud = document.getElementById('score-hud');
+const scoreHudValue = document.getElementById('score-hud-value');
+const scoreHudDetail = document.getElementById('score-hud-detail');
+const shotFeedback = document.getElementById('shot-feedback');
+const shotFeedbackMain = document.getElementById('shot-feedback-main');
+const shotFeedbackSub = document.getElementById('shot-feedback-sub');
+const powerMeter = document.getElementById('power-meter');
+const powerMeterMarker = document.getElementById('power-meter-marker');
+const powerMeterValue = document.getElementById('power-meter-value');
+let shotFeedbackHideTimeout = null;
 
 function setGameplayHudVisible(visible) {
     const method = visible ? 'remove' : 'add';
     uiOverlay?.classList[method]('hud-hidden');
     uiButtons?.classList[method]('hud-hidden');
     controlsHint?.classList[method]('hud-hidden');
+    scoreHud?.classList[method]('hud-hidden');
+    shotFeedback?.classList[method]('hud-hidden');
+    powerMeter?.classList[method]('hud-hidden');
+
+    if (!visible && shotFeedback) {
+        shotFeedback.classList.remove('show');
+        shotFeedback.setAttribute('aria-hidden', 'true');
+    }
 }
 
 function setupStartMenuOrbit() {
     const dx = camera.position.x - startOrbitCenter.x;
     const dz = camera.position.z - startOrbitCenter.z;
     startOrbitRadius = THREE.MathUtils.clamp(Math.hypot(dx, dz), 20, 58);
-    startOrbitAngle = Math.atan2(dx, dz);
+    startOrbitBaseAngle = Math.atan2(dx, dz);
     startOrbitHeight = THREE.MathUtils.clamp(camera.position.y, 9, 24);
+    startOrbitElapsed = 0;
+    startOrbitCamPos.copy(camera.position);
 }
 
 function updateStartMenuCamera(delta) {
-    startOrbitAngle -= START_ORBIT_SPEED * delta; // clockwise
-    const yBob = Math.sin(stabilizedElapsed * 0.22) * 0.15;
-    camera.position.set(
-        startOrbitCenter.x + Math.sin(startOrbitAngle) * startOrbitRadius,
-        startOrbitHeight + yBob,
-        startOrbitCenter.z + Math.cos(startOrbitAngle) * startOrbitRadius
-    );
+    // Drive orbit from elapsed time, not accumulated delta — eliminates frame-rate jitter
+    startOrbitElapsed += delta;
+    startOrbitAngle = startOrbitBaseAngle - START_ORBIT_SPEED * startOrbitElapsed;
+    const yBob = Math.sin(startOrbitElapsed * 0.22) * 0.15;
+
+    // Compute target position on the orbit circle
+    const targetX = startOrbitCenter.x + Math.sin(startOrbitAngle) * startOrbitRadius;
+    const targetY = startOrbitHeight + yBob;
+    const targetZ = startOrbitCenter.z + Math.cos(startOrbitAngle) * startOrbitRadius;
+
+    // Smooth toward target so micro-variations in frame timing don't cause jitter
+    const smooth = 1 - Math.exp(-5.0 * delta);
+    startOrbitCamPos.x += (targetX - startOrbitCamPos.x) * smooth;
+    startOrbitCamPos.y += (targetY - startOrbitCamPos.y) * smooth;
+    startOrbitCamPos.z += (targetZ - startOrbitCamPos.z) * smooth;
+
+    camera.position.copy(startOrbitCamPos);
     camera.lookAt(startOrbitCenter);
 }
 
@@ -208,15 +356,29 @@ function toggleDayNight() {
 
 function dropBall() {
     if (!basketballData) return;
-    // Reset shooting stance if active
+    dunkState = null;
+    pickupAssistTimer = 0;
+    basketballData._dunkControl = false;
+    if (playerData) playerData._pickupAssistActive = false;
+    // Reset shooting/passing stance if active
     if (shootingStance) {
         shootingStance = false;
         basketballData._shootingStance = false;
         shootAngle = 52;
+        shootTurnVelocity = 0;
         shootQueued = false;
         cancelShootQueued = false;
-        Object.keys(shootInput).forEach(k => shootInput[k] = false);
+        resetShootInput();
     }
+    if (passingStance) {
+        passingStance = false;
+        passTargetTeammate = null;
+        shootTurnVelocity = 0;
+        if (basketballData) basketballData._passingStance = false;
+    }
+    resetPowerMeterCycle();
+    pendingMake = null;
+    scorePrevBallValid = false;
     dropBasketballAtCenter(basketballData);
 
     const btn = document.getElementById('btn-balldrop');
@@ -226,6 +388,1171 @@ function dropBall() {
             btn.style.background = '';
         }, 220);
     }
+}
+
+function resetPowerMeterCycle() {
+    powerMeterPhase = 0;
+    powerMeterNorm = 0;
+    shotPowerMultiplier = POWER_METER_MIN_MULT;
+    powerMeterLockTimer = 0;
+}
+
+function lockPowerMeter(multiplier) {
+    const clamped = THREE.MathUtils.clamp(multiplier, POWER_METER_MIN_MULT, POWER_METER_MAX_MULT);
+    shotPowerMultiplier = clamped;
+    powerMeterLockedMult = clamped;
+    powerMeterLockedNorm = (clamped - POWER_METER_MIN_MULT) / (POWER_METER_MAX_MULT - POWER_METER_MIN_MULT);
+    powerMeterNorm = powerMeterLockedNorm;
+    powerMeterLockTimer = POWER_METER_LOCK_HOLD;
+}
+
+let _prevPowerOpacity = -1;
+let _prevPowerNorm = -1;
+let _prevPowerMult = -1;
+
+function updatePowerMeter(delta, active) {
+    if (!powerMeter || !powerMeterMarker || !powerMeterValue) return 1.0;
+
+    if (powerMeterLockTimer > 0) {
+        powerMeterLockTimer = Math.max(0, powerMeterLockTimer - delta);
+        powerMeterNorm = powerMeterLockedNorm;
+        shotPowerMultiplier = powerMeterLockedMult;
+    } else if (active) {
+        powerMeterPhase = (powerMeterPhase + delta * POWER_METER_CYCLES_PER_SEC) % 1;
+        powerMeterNorm = powerMeterPhase < 0.5 ? powerMeterPhase * 2 : 2 - powerMeterPhase * 2;
+        shotPowerMultiplier = THREE.MathUtils.lerp(POWER_METER_MIN_MULT, POWER_METER_MAX_MULT, powerMeterNorm);
+    } else {
+        // Already at rest — skip DOM writes entirely
+        if (powerMeterOpacity === 0 && _prevPowerOpacity === 0) return shotPowerMultiplier;
+        resetPowerMeterCycle();
+    }
+
+    const shouldShow = active || powerMeterLockTimer > 0;
+    const fadeRate = shouldShow ? POWER_METER_FADE_IN : POWER_METER_FADE_OUT;
+    powerMeterOpacity += (Number(shouldShow) - powerMeterOpacity) * (1 - Math.exp(-fadeRate * delta));
+    if (powerMeterOpacity < 0.004) powerMeterOpacity = 0;
+
+    // Only write to DOM when values actually change (avoids layout thrashing)
+    if (powerMeterOpacity !== _prevPowerOpacity) {
+        powerMeter.style.opacity = powerMeterOpacity;
+        powerMeter.setAttribute('aria-hidden', powerMeterOpacity === 0 ? 'true' : 'false');
+        _prevPowerOpacity = powerMeterOpacity;
+    }
+    if (powerMeterNorm !== _prevPowerNorm) {
+        powerMeterMarker.style.bottom = (powerMeterNorm * 100) + '%';
+        _prevPowerNorm = powerMeterNorm;
+    }
+    if (shotPowerMultiplier !== _prevPowerMult) {
+        powerMeterValue.textContent = shotPowerMultiplier.toFixed(2) + 'x';
+        _prevPowerMult = shotPowerMultiplier;
+    }
+
+    return shotPowerMultiplier;
+}
+
+function updateScoreHud() {
+    if (scoreHudValue) scoreHudValue.textContent = String(totalScore);
+    if (scoreHudDetail) scoreHudDetail.textContent = `Makes ${shotsMade}/${shotsAttempted}`;
+}
+
+function showShotFeedback(mainText, subText) {
+    if (!shotFeedback || !shotFeedbackMain || !shotFeedbackSub || !gameStarted) return;
+
+    shotFeedbackMain.textContent = mainText;
+    shotFeedbackSub.textContent = subText;
+    shotFeedback.classList.remove('hud-hidden');
+    shotFeedback.setAttribute('aria-hidden', 'false');
+
+    // Restart the enter transition for repeated makes.
+    shotFeedback.classList.remove('show');
+    // Force reflow to ensure animation restarts.
+    void shotFeedback.offsetWidth;
+    shotFeedback.classList.add('show');
+
+    if (shotFeedbackHideTimeout) clearTimeout(shotFeedbackHideTimeout);
+    shotFeedbackHideTimeout = setTimeout(() => {
+        shotFeedback.classList.remove('show');
+        setTimeout(() => {
+            if (!gameStarted) return;
+            shotFeedback.classList.add('hud-hidden');
+            shotFeedback.setAttribute('aria-hidden', 'true');
+        }, 220);
+    }, 980);
+}
+
+function refreshRimSensors() {
+    rimSensors = [];
+    for (const collider of hoopColliders) {
+        if (!collider?.isRim) continue;
+        rimSensors.push({
+            x: collider.x,
+            z: collider.z,
+            y: (collider.yMin + collider.yMax) * 0.5,
+            radius: collider.rimRingRadius || 0.2286
+        });
+    }
+}
+
+function registerMadeBasket(label = 'Bucket') {
+    totalScore += SHOT_POINTS;
+    shotsMade += 1;
+    scoreCooldown = Math.max(scoreCooldown, SCORE_COOLDOWN);
+    updateScoreHud();
+    showShotFeedback(`${label} +${SHOT_POINTS}`, `Total ${totalScore}`);
+}
+
+function updateScoringSystem(delta) {
+    if (scoreCooldown > 0) scoreCooldown = Math.max(0, scoreCooldown - delta);
+
+    if (!basketballData?.active || !basketballData.mesh?.visible || rimSensors.length === 0) {
+        scorePrevBallValid = false;
+        pendingMake = null;
+        return;
+    }
+
+    const ball = basketballData;
+    if (ball.heldByPlayer) {
+        scorePrevBallValid = false;
+        pendingMake = null;
+        return;
+    }
+
+    const curr = ball.mesh.position;
+    if (!scorePrevBallValid) {
+        scorePrevBallPos.copy(curr);
+        scorePrevBallValid = true;
+        return;
+    }
+
+    if (pendingMake) {
+        pendingMake.elapsed += delta;
+        const rim = pendingMake.rim;
+        const radial = Math.hypot(curr.x - rim.x, curr.z - rim.z);
+        const droppedThrough = curr.y <= rim.y - SCORE_CONFIRM_DROP;
+        const stillCentered = radial <= rim.radius * 0.86;
+
+        if (droppedThrough && stillCentered && ball.velocity.y < -0.1) {
+            registerMadeBasket();
+            pendingMake = null;
+            scoreCooldown = SCORE_COOLDOWN;
+        } else {
+            const roseBackAbove = curr.y > rim.y + 0.24;
+            const leftCylinder = radial > rim.radius * 1.24;
+            if (pendingMake.elapsed > SCORE_PENDING_MAX_TIME || roseBackAbove || leftCylinder) {
+                pendingMake = null;
+            }
+        }
+    }
+
+    if (!pendingMake && scoreCooldown <= 0) {
+        for (const rim of rimSensors) {
+            const prevDy = scorePrevBallPos.y - rim.y;
+            const currDy = curr.y - rim.y;
+            if (!(prevDy > SCORE_ENTRY_PLANE_PAD && currDy <= SCORE_ENTRY_PLANE_PAD)) continue;
+            if (ball.velocity.y > -0.2) continue;
+
+            const radial = Math.hypot(curr.x - rim.x, curr.z - rim.z);
+            const entryRadius = Math.max(0.08, rim.radius - ball.radius * 0.30);
+            if (radial > entryRadius) continue;
+
+            pendingMake = { rim, elapsed: 0 };
+            break;
+        }
+    }
+
+    scorePrevBallPos.copy(curr);
+}
+
+function updatePickupAssist(delta) {
+    if (!playerData || !basketballData || basketballData.heldByPlayer || dunkState) {
+        pickupAssistTimer = Math.max(0, pickupAssistTimer - delta);
+        if (playerData) playerData._pickupAssistActive = false;
+        pickupQueued = false;
+        return;
+    }
+
+    if (pickupQueued) {
+        pickupAssistTimer = PICKUP_ASSIST_DURATION;
+    }
+
+    let pickedUp = false;
+    if (pickupQueued || pickupAssistTimer > 0) {
+        pickedUp = tryPickUpBasketball(basketballData, playerData);
+    }
+
+    if (!pickedUp && pickupAssistTimer > 0) {
+        const ballPos = basketballData.mesh.position;
+        const playerPos = playerData.group.position;
+        const dx = ballPos.x - playerPos.x;
+        const dz = ballPos.z - playerPos.z;
+        const distSq = dx * dx + dz * dz;
+
+        if (distSq <= PICKUP_ASSIST_RADIUS * PICKUP_ASSIST_RADIUS) {
+            const groundY = playerPos.y + (playerData.visualGroundOffsetY || 0);
+            const facing = playerData.facingAngle || 0;
+            pickupAssistTarget.set(
+                playerPos.x + Math.sin(facing) * 0.26,
+                groundY + 0.94,
+                playerPos.z + Math.cos(facing) * 0.26
+            );
+
+            const pull = 1 - Math.exp(-PICKUP_ASSIST_PULL * delta);
+            basketballData.mesh.position.lerp(pickupAssistTarget, pull);
+            basketballData.velocity.multiplyScalar(0.35);
+            basketballData.sleeping = false;
+            basketballData.prevPosition.copy(basketballData.mesh.position);
+
+            pickedUp = tryPickUpBasketball(basketballData, playerData);
+        }
+    }
+
+    if (pickedUp) {
+        pickupAssistTimer = 0;
+        playerData._pickupAssistActive = false;
+    } else {
+        pickupAssistTimer = Math.max(0, pickupAssistTimer - delta);
+        playerData._pickupAssistActive = pickupAssistTimer > 0;
+    }
+
+    pickupQueued = false;
+}
+
+function smoothStep01(t) {
+    const c = THREE.MathUtils.clamp(t, 0, 1);
+    return c * c * (3 - 2 * c);
+}
+
+function lerpAngle(a, b, t) {
+    let diff = b - a;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    return a + diff * t;
+}
+
+function findNearestSeat() {
+    if (!playerData || !parkSeats.length) return null;
+    if (basketballData?.heldByPlayer) return null;
+
+    const pos = playerData.group.position;
+    const interactSq = SIT_INTERACT_RADIUS * SIT_INTERACT_RADIUS;
+    let best = null;
+    let bestScore = Infinity;
+
+    for (const seat of parkSeats) {
+        const targetY = seat.y - SIT_ROOT_OFFSET;
+        const dx = seat.x - pos.x;
+        const dz = seat.z - pos.z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq > interactSq) continue;
+
+        const dy = Math.abs(targetY - pos.y);
+        if (dy > 1.0) continue;
+
+        const score = distSq + dy * 0.35;
+        if (score < bestScore) {
+            bestScore = score;
+            best = seat;
+        }
+    }
+    return best;
+}
+
+function startSittingOnSeat(seat) {
+    if (!seat || !playerData) return false;
+    if (basketballData?.heldByPlayer || shootingStance || dunkState) return false;
+
+    const targetY = seat.y - SIT_ROOT_OFFSET;
+    sitTargetPos.set(seat.x, targetY, seat.z);
+    sitState = {
+        phase: 'enter',
+        elapsed: 0,
+        seat,
+        startPos: playerData.group.position.clone(),
+        targetPos: sitTargetPos.clone(),
+        startFacing: playerData.facingAngle || 0,
+        targetFacing: seat.facing || 0
+    };
+
+    playerData.velocity.set(0, 0, 0);
+    playerData.velocityY = 0;
+    playerData.isGrounded = true;
+    playerData.isJumping = false;
+    resetPlayerInput();
+    resetShootInput();
+    pickupAssistTimer = 0;
+    pickupQueued = false;
+    return true;
+}
+
+function startStandingFromSeat() {
+    if (!sitState || !playerData) return false;
+    const standY = -(playerData.visualGroundOffsetY || 0.265);
+    const pos = playerData.group.position;
+    sitExitTarget.set(pos.x, standY, pos.z);
+    sitState = {
+        phase: 'exit',
+        elapsed: 0,
+        seat: sitState.seat,
+        startPos: pos.clone(),
+        targetPos: sitExitTarget.clone(),
+        startFacing: playerData.facingAngle || 0,
+        targetFacing: playerData.facingAngle || 0
+    };
+    return true;
+}
+
+function updateSeating(delta) {
+    if (!sitState || !playerData) return;
+
+    const st = sitState;
+    st.elapsed += delta;
+
+    if (st.phase === 'enter') {
+        const t = smoothStep01(st.elapsed / SIT_ENTER_TIME);
+        playerData.group.position.lerpVectors(st.startPos, st.targetPos, t);
+        playerData.facingAngle = lerpAngle(st.startFacing, st.targetFacing, t);
+        playerData.group.rotation.y = playerData.facingAngle;
+        if (t >= 1) {
+            st.phase = 'sit';
+            st.elapsed = 0;
+        }
+    } else if (st.phase === 'sit') {
+        playerData.group.position.copy(st.targetPos);
+        playerData.facingAngle = st.targetFacing;
+        playerData.group.rotation.y = playerData.facingAngle;
+    } else if (st.phase === 'exit') {
+        const t = smoothStep01(st.elapsed / SIT_EXIT_TIME);
+        playerData.group.position.lerpVectors(st.startPos, st.targetPos, t);
+        playerData.facingAngle = lerpAngle(st.startFacing, st.targetFacing, t);
+        playerData.group.rotation.y = playerData.facingAngle;
+        if (t >= 1) {
+            sitState = null;
+        }
+    }
+}
+
+// ─── Opponent helpers ────────────────────────────────────────
+function addOpponent() {
+    if (opponents.length >= MAX_OPPONENTS) return;
+    if (!playerData) return;
+
+    const px = playerData.group.position.x;
+    const pz = playerData.group.position.z;
+    const idx = opponents.length;
+    // Spawn on the opposite side of the court from the player
+    const side = idx % 2 === 0 ? -1 : 1;
+    const offset = (Math.floor(idx / 2) + 1) * 3.0;
+
+    const opp = createPlayer(scene, {
+        jerseyColor: OPPONENT_JERSEY_COLOR,
+        jerseyNumber: OPPONENT_NUMBERS[idx % OPPONENT_NUMBERS.length],
+        spawnPosition: { x: px + side * offset, y: undefined, z: pz + 3 },
+        facingAngle: 0,
+        name: 'opponent_' + idx,
+        isTeammate: false,
+        visible: true
+    });
+    opp.group.visible = true;
+
+    // Add a cylinder collider for this opponent so the player can't walk through them
+    const oppPos = opp.group.position;
+    const collider = {
+        type: 'cylinder',
+        x: oppPos.x,
+        z: oppPos.z,
+        radius: OPPONENT_COLLIDER_RADIUS,
+        yMin: oppPos.y + opp.visualGroundOffsetY,
+        yMax: oppPos.y + opp.visualGroundOffsetY + 1.88,
+        _isOpponentCollider: true,
+        _opponentRef: opp
+    };
+    opp._collider = collider;
+    playerColliders.push(collider);
+
+    opponents.push(opp);
+}
+
+function updateOpponentColliders() {
+    for (const opp of opponents) {
+        if (!opp._collider || !opp.group.visible) continue;
+        const pos = opp.group.position;
+        const groundY = pos.y + (opp.visualGroundOffsetY || 0);
+        opp._collider.x = pos.x;
+        opp._collider.z = pos.z;
+        opp._collider.yMin = groundY;
+        opp._collider.yMax = groundY + 1.88;
+        // Clear broadphase cache so it recomputes
+        opp._collider._pbpR = undefined;
+    }
+}
+
+// ── Opponent AI constants ────────────────────────────────
+const OPP_PURSUE_SPEED_FACTOR = 0.85;  // slightly slower than player
+const OPP_WANDER_PAUSE_MIN = 0.8;
+const OPP_WANDER_PAUSE_MAX = 2.0;
+const OPP_PICKUP_RADIUS = 0.9;
+const OPP_HOLD_TIME_MIN = 1.5;
+const OPP_HOLD_TIME_MAX = 3.5;
+const OPP_PUNCH_CHANCE = 0.012;         // per-frame chance to punch when near player with ball
+
+function updateOpponentAI(opp, delta) {
+    const oppPos = opp.group.position;
+    const tmInput = { forward: false, backward: false, left: false, right: false, jump: false };
+
+    // Skip AI if stunned — just run physics/animation
+    if (opp.stunTimer > 0) {
+        const filteredColliders = playerColliders.filter(c => c !== opp._collider);
+        updatePlayer(opp, delta, tmInput, null, filteredColliders, null);
+        return;
+    }
+
+    const ballFree = basketballData?.active && !basketballData.heldByPlayer;
+    const oppHoldsBall = basketballData?.heldByPlayer && basketballData.heldByPlayerData === opp;
+
+    // ── State: Opponent holds ball — dribble around then drop it ──
+    if (oppHoldsBall) {
+        opp._holdTimer = (opp._holdTimer || 0) + delta;
+        const holdLimit = OPP_HOLD_TIME_MIN + (opp._holdSeed || 0) * (OPP_HOLD_TIME_MAX - OPP_HOLD_TIME_MIN);
+
+        // Wander while holding
+        if (!opp._holdWanderTarget || opp._holdWanderDist < 1.5) {
+            opp._holdWanderTarget = {
+                x: -8 + Math.random() * 16,
+                z: -13 + Math.random() * 26
+            };
+        }
+        const hwdx = opp._holdWanderTarget.x - oppPos.x;
+        const hwdz = opp._holdWanderTarget.z - oppPos.z;
+        opp._holdWanderDist = Math.hypot(hwdx, hwdz);
+        if (hwdz < -0.3) tmInput.forward = true;
+        if (hwdz > 0.3) tmInput.backward = true;
+        if (hwdx < -0.3) tmInput.left = true;
+        if (hwdx > 0.3) tmInput.right = true;
+
+        const isMoving = tmInput.forward || tmInput.backward || tmInput.left || tmInput.right;
+        const oppCarry = {
+            holding: true, shooting: false, dribbling: isMoving,
+            dribblePhase: basketballData.dribblePhase || 0,
+            dunking: false, hanging: false, seated: false, seatSettled: false
+        };
+
+        // After hold time, drop ball
+        if (opp._holdTimer > holdLimit) {
+            forceDropBall(basketballData, Math.sin(opp.facingAngle), Math.cos(opp.facingAngle));
+            opp._holdTimer = 0;
+            opp._holdSeed = Math.random();
+        }
+
+        const filteredColliders = playerColliders.filter(c => c !== opp._collider);
+        updatePlayer(opp, delta, tmInput, null, filteredColliders, oppCarry);
+        return;
+    }
+
+    opp._holdTimer = 0;
+
+    // ── State: Ball is free — pursue it ──
+    if (ballFree) {
+        const bx = basketballData.mesh.position.x;
+        const bz = basketballData.mesh.position.z;
+        const dx = bx - oppPos.x;
+        const dz = bz - oppPos.z;
+        const dist = Math.hypot(dx, dz);
+
+        if (dist > OPP_PICKUP_RADIUS) {
+            // Move toward ball
+            if (dz < -0.3) tmInput.forward = true;
+            if (dz > 0.3) tmInput.backward = true;
+            if (dx < -0.3) tmInput.left = true;
+            if (dx > 0.3) tmInput.right = true;
+        } else {
+            // Close enough — try to pick up
+            const picked = tryPickUpBasketball(basketballData, opp);
+            if (picked) {
+                opp._holdSeed = Math.random();
+            }
+        }
+
+        const filteredColliders = playerColliders.filter(c => c !== opp._collider);
+        updatePlayer(opp, delta, tmInput, null, filteredColliders, null);
+        return;
+    }
+
+    // ── State: Ball is held by someone else — wander + aggro ──
+    // If player has ball and is close, occasionally punch
+    if (basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData) {
+        const toPlayerDx = playerData.group.position.x - oppPos.x;
+        const toPlayerDz = playerData.group.position.z - oppPos.z;
+        const toPlayerDist = Math.hypot(toPlayerDx, toPlayerDz);
+
+        if (toPlayerDist < 2.5) {
+            // Move toward player aggressively
+            if (toPlayerDz < -0.2) tmInput.forward = true;
+            if (toPlayerDz > 0.2) tmInput.backward = true;
+            if (toPlayerDx < -0.2) tmInput.left = true;
+            if (toPlayerDx > 0.2) tmInput.right = true;
+
+            // Random punch attempts
+            if (toPlayerDist < 1.2 && Math.random() < OPP_PUNCH_CHANCE) {
+                opp.punchQueued = true;
+            }
+        } else if (toPlayerDist < 8.0) {
+            // Chase player loosely
+            if (toPlayerDz < -0.5) tmInput.forward = true;
+            if (toPlayerDz > 0.5) tmInput.backward = true;
+            if (toPlayerDx < -0.5) tmInput.left = true;
+            if (toPlayerDx > 0.5) tmInput.right = true;
+        } else {
+            // Wander
+            doOpponentWander(opp, delta, tmInput);
+        }
+
+        const filteredColliders = playerColliders.filter(c => c !== opp._collider);
+        updatePlayer(opp, delta, tmInput, null, filteredColliders, null);
+        return;
+    }
+
+    // ── Default: wander around court ──
+    doOpponentWander(opp, delta, tmInput);
+
+    const filteredColliders = playerColliders.filter(c => c !== opp._collider);
+    updatePlayer(opp, delta, tmInput, null, filteredColliders, null);
+}
+
+function doOpponentWander(opp, delta, tmInput) {
+    const oppPos = opp.group.position;
+
+    if (!opp._wanderTarget || opp._wanderDist < 1.0) {
+        opp._wanderTarget = {
+            x: -8 + Math.random() * 16,
+            z: -13 + Math.random() * 26
+        };
+        opp._wanderPause = OPP_WANDER_PAUSE_MIN + Math.random() * (OPP_WANDER_PAUSE_MAX - OPP_WANDER_PAUSE_MIN);
+    }
+
+    if ((opp._wanderPause || 0) > 0) {
+        opp._wanderPause -= delta;
+        return;
+    }
+
+    const wdx = opp._wanderTarget.x - oppPos.x;
+    const wdz = opp._wanderTarget.z - oppPos.z;
+    opp._wanderDist = Math.hypot(wdx, wdz);
+
+    if (wdz < -0.5) tmInput.forward = true;
+    if (wdz > 0.5) tmInput.backward = true;
+    if (wdx < -0.5) tmInput.left = true;
+    if (wdx > 0.5) tmInput.right = true;
+}
+
+// ─── Punch Collision Detection ──────────────────────────────
+function updatePunchCollisions() {
+    if (!playerData || !gameStarted) return;
+
+    // Gather all players that exist
+    const allEntities = [playerData, ...teammates, ...opponents];
+
+    for (const attacker of allEntities) {
+        if (!attacker.group.visible) continue;
+        const fistPos = getPunchFistPosition(attacker);
+        if (!fistPos) continue;
+
+        // Check against every other player
+        for (const target of allEntities) {
+            if (target === attacker) continue;
+            if (!target.group.visible) continue;
+            if (target.stunTimer > 0) continue; // already stunned
+
+            const tPos = target.group.position;
+            const tGroundY = tPos.y + (target.visualGroundOffsetY || 0);
+
+            // Check if fist is near target's body (torso region)
+            const dx = fistPos.x - tPos.x;
+            const dz = fistPos.z - tPos.z;
+            const xzDist = Math.hypot(dx, dz);
+            const fistY = fistPos.y;
+
+            // Fist must be within hit radius horizontally and within torso height vertically
+            if (xzDist > PUNCH_HIT_RADIUS) continue;
+            if (fistY < tGroundY + 0.5 || fistY > tGroundY + 1.8) continue;
+
+            // Hit registered! Compute hit direction (attacker → target)
+            const hitLen = Math.max(xzDist, 0.01);
+            const hitDirX = dx / hitLen;
+            const hitDirZ = dz / hitLen;
+
+            // Apply stun
+            applyStun(target, hitDirX, hitDirZ);
+            attacker._punchHitLanded = true; // prevent multi-hit from same punch
+
+            // Drop ball if target is holding it
+            if (basketballData?.heldByPlayer && basketballData.heldByPlayerData === target) {
+                // Cancel any stance
+                if (target === playerData) {
+                    shootingStance = false;
+                    passingStance = false;
+                }
+                forceDropBall(basketballData, hitDirX, hitDirZ);
+            }
+
+            // Only one hit per punch swing
+            break;
+        }
+    }
+}
+
+// ─── Teammate & Passing helpers ──────────────────────────────
+const _passTargetPos = new THREE.Vector3();
+
+function addTeammate() {
+    if (teammates.length >= MAX_TEAMMATES) return;
+    if (!playerData) return;
+
+    const px = playerData.group.position.x;
+    const pz = playerData.group.position.z;
+    const idx = teammates.length;
+    const side = idx % 2 === 0 ? 1 : -1;
+    const offset = (Math.floor(idx / 2) + 1) * 3.0;
+
+    const tm = createPlayer(scene, {
+        jerseyColor: 0xcc2222,
+        jerseyNumber: TEAMMATE_NUMBERS[idx % TEAMMATE_NUMBERS.length],
+        spawnPosition: { x: px + side * offset, y: undefined, z: pz - 2 },
+        facingAngle: Math.PI,
+        name: 'teammate_' + idx,
+        isTeammate: true,
+        visible: true
+    });
+    tm.group.visible = true;
+    teammates.push(tm);
+}
+
+function findNearestTeammate() {
+    let best = null, bestDist = Infinity;
+    for (const tm of teammates) {
+        if (!tm.group.visible) continue;
+        const d = distToTeammate(tm);
+        if (d < bestDist) { bestDist = d; best = tm; }
+    }
+    return best;
+}
+
+function distToTeammate(tm) {
+    const dx = tm.group.position.x - playerData.group.position.x;
+    const dz = tm.group.position.z - playerData.group.position.z;
+    return Math.hypot(dx, dz);
+}
+
+function executePass(target, type) {
+    _passTargetPos.set(target.group.position.x, getTeammateChestY(target), target.group.position.z);
+    passBallToTarget(basketballData, playerData, _passTargetPos, type);
+}
+
+function executePassAimed(powerMultiplier = 1.0) {
+    // Aimed pass fires along player facing direction, scaled by power
+    const facing = playerData.facingAngle || 0;
+    const fwdX = Math.sin(facing);
+    const fwdZ = Math.cos(facing);
+    const px = playerData.group.position.x;
+    const pz = playerData.group.position.z;
+    const groundY = playerData.group.position.y + (playerData.visualGroundOffsetY || 0);
+    // Distance scaled by power: low power = short pass, high power = long pass
+    const passDist = 5 + powerMultiplier * 18;
+    _passTargetPos.set(px + fwdX * passDist, groundY + 1.18, pz + fwdZ * passDist);
+    passBallToTarget(basketballData, playerData, _passTargetPos, 'aimed');
+}
+
+function getTeammateChestY(tm) {
+    return tm.group.position.y + (tm.visualGroundOffsetY || 0) + 1.18;
+}
+
+// Teammate AI state per teammate stored on the playerData object
+function updateTeammateAI(tm, delta) {
+    // If stunned, just run physics/animation with no input
+    if (tm.stunTimer > 0) {
+        const tmInput = { forward: false, backward: false, left: false, right: false, jump: false };
+        updatePlayer(tm, delta, tmInput, null, playerColliders, null);
+        return;
+    }
+
+    // If teammate has ball: hold briefly, then pass back
+    const tmHoldsBall = basketballData?.heldByPlayer && basketballData.heldByPlayerData === tm;
+
+    if (tmHoldsBall) {
+        tm._holdTimer = (tm._holdTimer || 0) + delta;
+
+        // Walk toward the player while holding ball, then pass when close or after timeout
+        const toPlayerDx = playerData.group.position.x - tm.group.position.x;
+        const toPlayerDz = playerData.group.position.z - tm.group.position.z;
+        const toPlayerDist = Math.hypot(toPlayerDx, toPlayerDz);
+
+        const shouldPass = (tm._holdTimer > 1.5) || (tm._holdTimer > 0.4 && toPlayerDist < 5.0);
+
+        if (shouldPass && playerData?.group?.visible) {
+            _passTargetPos.set(
+                playerData.group.position.x,
+                playerData.group.position.y + (playerData.visualGroundOffsetY || 0) + 1.18,
+                playerData.group.position.z
+            );
+            passBallToTarget(basketballData, tm, _passTargetPos, 'chest');
+            tm._holdTimer = 0;
+        }
+
+        // Move toward player while holding (dribbling)
+        const tmInput = { forward: false, backward: false, left: false, right: false, jump: false };
+        if (toPlayerDist > 3.0) {
+            if (toPlayerDz < -0.3) tmInput.forward = true;
+            if (toPlayerDz > 0.3) tmInput.backward = true;
+            if (toPlayerDx < -0.3) tmInput.left = true;
+            if (toPlayerDx > 0.3) tmInput.right = true;
+        }
+
+        const isMoving = tmInput.forward || tmInput.backward || tmInput.left || tmInput.right;
+        const tmCarry = { holding: true, shooting: false, dribbling: isMoving, dribblePhase: basketballData.dribblePhase || 0,
+                          dunking: false, hanging: false, seated: false, seatSettled: false };
+        updatePlayer(tm, delta, tmInput, null, playerColliders, tmCarry);
+        return;
+    }
+    tm._holdTimer = 0;
+
+    // Wander: pick a target point on court, walk toward it, brief pause between moves
+    if (!tm._wanderTarget || tm._wanderDist < 1.0) {
+        tm._wanderTarget = {
+            x: -7 + Math.random() * 14,
+            z: -12 + Math.random() * 24
+        };
+        tm._wanderPause = 0.3 + Math.random() * 1.0;
+    }
+
+    if ((tm._wanderPause || 0) > 0) {
+        tm._wanderPause -= delta;
+        const tmInput = { forward: false, backward: false, left: false, right: false, jump: false };
+        updatePlayer(tm, delta, tmInput, null, playerColliders, null);
+        return;
+    }
+
+    const wdx = tm._wanderTarget.x - tm.group.position.x;
+    const wdz = tm._wanderTarget.z - tm.group.position.z;
+    tm._wanderDist = Math.hypot(wdx, wdz);
+
+    const tmInput = { forward: false, backward: false, left: false, right: false, jump: false };
+    // World-axis input (updatePlayer with null movementBasis uses WORLD_FORWARD/WORLD_RIGHT)
+    if (wdz < -0.3) tmInput.forward = true;
+    if (wdz > 0.3) tmInput.backward = true;
+    if (wdx < -0.3) tmInput.left = true;
+    if (wdx > 0.3) tmInput.right = true;
+
+    updatePlayer(tm, delta, tmInput, null, playerColliders, null);
+}
+
+// ─── Pass line visualization ──────────────────────────────────
+function createPassLine() {
+    const positions = new Float32Array(2 * 3);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.LineBasicMaterial({
+        color: 0xff3333,
+        transparent: true,
+        opacity: 0,
+        depthTest: true,
+        depthWrite: false,
+    });
+    passingLine = new THREE.Line(geometry, material);
+    passingLine.visible = false;
+    passingLine.frustumCulled = false;
+    passingLine.renderOrder = 999;
+    scene.add(passingLine);
+}
+
+function updatePassLine(delta) {
+    if (passLineOpacity === 0 && !passingStance) {
+        if (passingLine) passingLine.visible = false;
+        return;
+    }
+
+    const targetOp = passingStance ? 0.5 : 0;
+    const rate = passingStance ? PASS_LINE_FADE_IN : PASS_LINE_FADE_OUT;
+    passLineOpacity += (targetOp - passLineOpacity) * (1 - Math.exp(-rate * delta));
+    if (passLineOpacity < 0.005) { passLineOpacity = 0; }
+
+    if (!passingLine || passLineOpacity === 0) {
+        if (passingLine) passingLine.visible = false;
+        return;
+    }
+
+    passingLine.visible = true;
+    passingLine.material.opacity = passLineOpacity;
+
+    const facing = playerData.facingAngle || 0;
+    const fwdX = Math.sin(facing);
+    const fwdZ = Math.cos(facing);
+    const pp = playerData.group.position;
+    const groundY = pp.y + (playerData.visualGroundOffsetY || 0);
+    const releaseY = groundY + 1.18;
+
+    const pos = passingLine.geometry.attributes.position;
+    // Start point: player's chest
+    pos.array[0] = pp.x + fwdX * 0.3;
+    pos.array[1] = releaseY;
+    pos.array[2] = pp.z + fwdZ * 0.3;
+    // End point: extend along facing direction
+    const lineLen = 25;
+    pos.array[3] = pp.x + fwdX * lineLen;
+    pos.array[4] = releaseY;
+    pos.array[5] = pp.z + fwdZ * lineLen;
+    pos.needsUpdate = true;
+}
+
+function findDunkRim() {
+    if (!playerData || !basketballData?.heldByPlayer || playerData.isGrounded || rimSensors.length === 0) return null;
+
+    const playerPos = playerData.group.position;
+    const groundY = playerPos.y + (playerData.visualGroundOffsetY || 0);
+    const handApproxY = groundY + 1.9;
+    if (handApproxY < DUNK_MIN_HAND_HEIGHT) return null;
+
+    const facing = playerData.facingAngle || 0;
+    const fwdX = Math.sin(facing);
+    const fwdZ = Math.cos(facing);
+
+    let best = null;
+    let bestScore = Infinity;
+    for (const rim of rimSensors) {
+        const dx = rim.x - playerPos.x;
+        const dz = rim.z - playerPos.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > DUNK_TRIGGER_RADIUS) continue;
+
+        const facingDot = dist > 1e-5 ? (dx * fwdX + dz * fwdZ) / dist : 1;
+        if (facingDot < 0.05) continue;
+
+        const verticalGap = Math.abs(handApproxY - rim.y);
+        if (verticalGap > 1.0) continue;
+
+        const score = dist + verticalGap * 0.2 - facingDot * 0.2;
+        if (score < bestScore) {
+            bestScore = score;
+            best = rim;
+        }
+    }
+    return best;
+}
+
+function startDunk(rim) {
+    if (!playerData || !basketballData || !rim) return false;
+
+    const startPlayer = playerData.group.position.clone();
+    const startBall = basketballData.mesh.position.clone();
+    const footOffset = playerData.visualGroundOffsetY || 0.265;
+
+    dunkTmpInward.set(-rim.x, 0, -rim.z);
+    if (dunkTmpInward.lengthSq() < 1e-8) {
+        dunkTmpInward.set(0, 0, rim.z > 0 ? -1 : 1);
+    }
+    dunkTmpInward.normalize();
+
+    const targetGroundY = rim.y - 1.58;
+    const targetPlayer = new THREE.Vector3(
+        rim.x + dunkTmpInward.x * 0.5,
+        targetGroundY - footOffset,
+        rim.z + dunkTmpInward.z * 0.5
+    );
+
+    const preSlamBall = new THREE.Vector3(
+        rim.x + dunkTmpInward.x * 0.12,
+        rim.y + 0.3,
+        rim.z + dunkTmpInward.z * 0.12
+    );
+
+    const postSlamBall = new THREE.Vector3(
+        rim.x + dunkTmpInward.x * 0.02,
+        rim.y - DUNK_BALL_RELEASE_DROP,
+        rim.z + dunkTmpInward.z * 0.02
+    );
+
+    dunkState = {
+        phase: 'approach',
+        elapsed: 0,
+        rim,
+        inward: dunkTmpInward.clone(),
+        startPlayer,
+        targetPlayer,
+        hangPlayer: targetPlayer.clone(),
+        startBall,
+        preSlamBall,
+        postSlamBall,
+        ballReleased: false,
+        scored: false
+    };
+
+    shootingStance = false;
+    shootQueued = false;
+    cancelShootQueued = false;
+    pickupAssistTimer = 0;
+    resetPowerMeterCycle();
+    shotsAttempted += 1;
+    updateScoreHud();
+
+    basketballData._shootingStance = false;
+    basketballData._dunkControl = true;
+    basketballData.heldByPlayer = true;
+    basketballData.dribblingByPlayer = false;
+    basketballData.velocity.set(0, 0, 0);
+    basketballData.sleeping = false;
+    basketballData.grounded = false;
+    basketballData.idleFrames = 0;
+
+    playerData.velocity.set(0, 0, 0);
+    playerData.velocityY = 0;
+    playerData.isGrounded = false;
+    playerData.isJumping = true;
+    resetPlayerInput();
+    resetShootInput();
+    return true;
+}
+
+function updateDunk(delta) {
+    if (!dunkState || !playerData || !basketballData) return;
+
+    const ds = dunkState;
+    ds.elapsed += delta;
+
+    const playerPos = playerData.group.position;
+    const ballPos = basketballData.mesh.position;
+    const rim = ds.rim;
+
+    dunkTmpRimDir.set(rim.x - playerPos.x, 0, rim.z - playerPos.z);
+    if (dunkTmpRimDir.lengthSq() > 1e-6) {
+        const targetFacing = Math.atan2(dunkTmpRimDir.x, dunkTmpRimDir.z);
+        let diff = targetFacing - playerData.facingAngle;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        playerData.facingAngle += diff * (1 - Math.exp(-18 * delta));
+        playerData.group.rotation.y = playerData.facingAngle;
+    }
+
+    function releaseDunkBallNow() {
+        if (ds.ballReleased) return;
+        ds.ballReleased = true;
+        basketballData.heldByPlayer = false;
+        basketballData.dribblingByPlayer = false;
+        basketballData._shootingStance = false;
+        basketballData._dunkControl = false;
+        basketballData.mesh.position.copy(ds.postSlamBall);
+        basketballData.velocity.set(ds.inward.x * 1.65, DUNK_BALL_RELEASE_SPEED_Y, ds.inward.z * 1.65);
+        basketballData._ignoreRimTimer = 0.3;
+        basketballData._ignorePlayerTimer = 0.2;
+        basketballData.prevPosition.copy(basketballData.mesh.position);
+        basketballData.sleeping = false;
+        basketballData.grounded = false;
+        basketballData.idleFrames = 0;
+    }
+
+    if (!ds.ballReleased) {
+        basketballData._dunkControl = true;
+        basketballData.heldByPlayer = true;
+        basketballData.dribblingByPlayer = false;
+        basketballData._shootingStance = false;
+        basketballData.velocity.set(0, 0, 0);
+        basketballData.sleeping = false;
+        basketballData.grounded = false;
+        basketballData.idleFrames = 0;
+    }
+
+    if (ds.phase === 'approach') {
+        const t = Math.min(1, ds.elapsed / DUNK_APPROACH_TIME);
+        playerPos.lerpVectors(ds.startPlayer, ds.targetPlayer, t);
+        if (!ds.ballReleased) {
+            ballPos.lerpVectors(ds.startBall, ds.preSlamBall, t);
+        }
+
+        if (t >= 1) {
+            ds.phase = 'slam';
+            ds.elapsed = 0;
+        }
+    } else if (ds.phase === 'slam') {
+        const t = Math.min(1, ds.elapsed / DUNK_SLAM_TIME);
+        playerPos.copy(ds.targetPlayer);
+        if (!ds.ballReleased) {
+            ballPos.lerpVectors(ds.preSlamBall, ds.postSlamBall, t);
+        }
+
+        if (!ds.scored && t >= 0.55) {
+            registerMadeBasket('Dunk');
+            pendingMake = null;
+            scorePrevBallValid = false;
+            ds.scored = true;
+        }
+
+        if (t >= 1) {
+            releaseDunkBallNow();
+            ds.phase = 'hang';
+            ds.elapsed = 0;
+        }
+    } else if (ds.phase === 'hang') {
+        playerPos.copy(ds.hangPlayer);
+        releaseDunkBallNow();
+
+        if (ds.elapsed >= DUNK_HANG_TIME) {
+            ds.phase = 'release';
+            ds.elapsed = 0;
+        }
+    } else if (ds.phase === 'release') {
+        const t = Math.min(1, ds.elapsed / DUNK_RELEASE_TIME);
+        playerPos.y = ds.hangPlayer.y - 0.7 * t;
+        releaseDunkBallNow();
+
+        if (t >= 1) {
+            playerData.velocity.set(0, 0, 0);
+            playerData.velocityY = -1.75;
+            playerData.isGrounded = false;
+            playerData.isJumping = true;
+            dunkState = null;
+        }
+    }
+}
+
+// ─── Shooting Arc ───────────────────────────────────────────
+function createShootingArc() {
+    const positions = new Float32Array(ARC_NUM_POINTS * 3);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setDrawRange(0, 0);
+
+    const material = new THREE.LineBasicMaterial({
+        color: 0xd93030,
+        transparent: true,
+        opacity: 0,
+        depthTest: true,
+        depthWrite: false,
+    });
+
+    shootingArcLine = new THREE.Line(geometry, material);
+    shootingArcLine.visible = false;
+    shootingArcLine.frustumCulled = false;
+    shootingArcLine.renderOrder = 999;
+    scene.add(shootingArcLine);
+}
+
+function updateShootingArc(delta) {
+    // Fast bail-out: if already invisible and not in stance, skip everything
+    if (arcOpacity === 0 && !shootingStance) return;
+
+    // ── Fade opacity in/out ──────────────────────────────
+    const targetOpacity = shootingStance ? 0.55 : 0;
+    if (shootingStance) {
+        arcOpacity += (targetOpacity - arcOpacity) * (1 - Math.exp(-ARC_FADE_IN_RATE * delta));
+    } else {
+        arcOpacity += (targetOpacity - arcOpacity) * (1 - Math.exp(-ARC_FADE_OUT_RATE * delta));
+    }
+    // Snap to zero when close enough
+    if (arcOpacity < 0.005) arcOpacity = 0;
+
+    if (!shootingArcLine) return;
+    shootingArcLine.material.opacity = arcOpacity;
+    shootingArcLine.visible = arcOpacity > 0;
+    if (arcOpacity === 0) return;
+
+    if (!playerData) return;
+
+    // ── Gather player state ──────────────────────────────
+    const groundY = playerData.group.position.y + (playerData.visualGroundOffsetY || 0);
+    const releaseY = groundY + ARC_RELEASE_H;
+    const px = playerData.group.position.x;
+    const pz = playerData.group.position.z;
+    const facing = playerData.facingAngle || 0;
+    const fwdX = Math.sin(facing);
+    const fwdZ = Math.cos(facing);
+
+    // Release point (matches shootBasketball in ball.js)
+    const startX = px + fwdX * 0.15;
+    const startY = releaseY;
+    const startZ = pz + fwdZ * 0.15;
+
+    // ── Find target rim (same logic as ball.js) ──────────
+    let bestRimX = 0, bestRimZ = 0;
+    let bestDot = -Infinity;
+    for (const side of [-1, 1]) {
+        const baselineZ = side * ARC_HALF_COURT;
+        const bbFaceZ = baselineZ - side * ARC_BB_FROM_BL;
+        const rimZ = bbFaceZ - side * (ARC_RIM_FROM_BB + ARC_RIM_RADIUS);
+        const dx = 0 - px;
+        const dz = rimZ - pz;
+        const dot = dx * fwdX + dz * fwdZ;
+        if (dot > bestDot) {
+            bestDot = dot;
+            bestRimX = 0;
+            bestRimZ = rimZ;
+        }
+    }
+
+    // ── Projectile velocity (same formula as ball.js) ────
+    const dx = bestRimX - px;
+    const dz = bestRimZ - pz;
+    const horizontalDist = Math.hypot(dx, dz);
+    const dy = ARC_RIM_HEIGHT - releaseY;
+
+    const angleDeg = Math.max(SHOOT_ANGLE_MIN, Math.min(SHOOT_ANGLE_MAX, shootAngle));
+    const angleRad = angleDeg * Math.PI / 180;
+    const power = 1.0; // Arc preview follows angle only, not live power meter oscillation
+    const cosA = Math.cos(angleRad);
+    const tanA = Math.tan(angleRad);
+    const g = Math.abs(ARC_GRAVITY);
+
+    let vx, vy, vz;
+    const denominator = horizontalDist * tanA - dy;
+
+    if (denominator <= 0.01 || horizontalDist < 0.3) {
+        // Fallback lob (matches ball.js)
+        vx = fwdX * 5 * power;
+        vy = 6 * power;
+        vz = fwdZ * 5 * power;
+    } else {
+        const speedSq = (g * horizontalDist * horizontalDist) / (2 * cosA * cosA * denominator);
+        if (speedSq <= 0) {
+            vx = fwdX * 5 * power;
+            vy = 6 * power;
+            vz = fwdZ * 5 * power;
+        } else {
+            const speed = Math.min(Math.min(Math.sqrt(speedSq), 18) * power, 20);
+            const vHorizontal = speed * cosA;
+            vy = speed * Math.sin(angleRad);
+
+            // 70% facing + 30% rim direction (aim assist)
+            const rimDirX = horizontalDist > 0.1 ? dx / horizontalDist : fwdX;
+            const rimDirZ = horizontalDist > 0.1 ? dz / horizontalDist : fwdZ;
+            const aimX = fwdX * 0.7 + rimDirX * 0.3;
+            const aimZ = fwdZ * 0.7 + rimDirZ * 0.3;
+            const aimLen = Math.hypot(aimX, aimZ) || 1;
+
+            vx = vHorizontal * (aimX / aimLen);
+            vz = vHorizontal * (aimZ / aimLen);
+        }
+    }
+
+    // ── Trace the parabolic arc ──────────────────────────
+    // Flight time: slightly past the rim so the descending arc is visible
+    const vHoriz = Math.hypot(vx, vz);
+    const flightTime = vHoriz > 0.1 ? (horizontalDist * 1.12) / vHoriz : 2.0;
+    const peakTime = vy / g; // time at apex (vy / |gravity|)
+
+    const attr = shootingArcLine.geometry.getAttribute('position');
+    let numVisible = 0;
+
+    for (let i = 0; i < ARC_NUM_POINTS; i++) {
+        const t = (i / (ARC_NUM_POINTS - 1)) * flightTime;
+        const x = startX + vx * t;
+        const y = startY + vy * t + 0.5 * ARC_GRAVITY * t * t;
+        const z = startZ + vz * t;
+
+        attr.setXYZ(i, x, y, z);
+        numVisible = i + 1;
+
+        // Stop if past apex and descended below the floor
+        if (t > peakTime && y < groundY + 0.1) break;
+    }
+
+    attr.needsUpdate = true;
+    shootingArcLine.geometry.setDrawRange(0, numVisible);
 }
 
 function updateDayNight(delta) {
@@ -238,90 +1565,80 @@ function updateDayNight(delta) {
     }
 }
 
+// ─── Pre-allocated colors for day/night (avoid per-frame GC) ─────
+const _dayFog = new THREE.Color(0x87CEEB);
+const _nightFog = new THREE.Color(0x0a0a1a);
+const _daySunColor = new THREE.Color(0xffeedd);
+const _nightSunColor = new THREE.Color(0x222244);
+const _tmpSunColor = new THREE.Color();
+
 function applyDayNightState(t) {
     // t: 0 = day, 1 = night
 
     // Fog color
-    const dayFog = new THREE.Color(0x87CEEB);
-    const nightFog = new THREE.Color(0x0a0a1a);
-    scene.fog.color.copy(dayFog).lerp(nightFog, t);
+    scene.fog.color.copy(_dayFog).lerp(_nightFog, t);
 
     // Tone mapping exposure
     renderer.toneMappingExposure = THREE.MathUtils.lerp(1.1, 0.45, t);
 
     // Sky blend via background color (smooth transition)
-    if (t < 0.5) {
-        scene.background = daySkyTexture;
-    } else {
-        scene.background = nightSkyTexture;
-    }
+    scene.background = t < 0.5 ? daySkyTexture : nightSkyTexture;
 
-    // Update lights
-    if (lightingGroup) {
-        lightingGroup.traverse((child) => {
-            if (child.isLight) {
-                if (child.userData.lightRole === 'sun') {
-                    child.intensity = THREE.MathUtils.lerp(1.8, 0.05, t);
-                    child.color.copy(new THREE.Color(0xffeedd).lerp(new THREE.Color(0x222244), t));
-                } else if (child.userData.lightRole === 'ambient') {
-                    child.intensity = THREE.MathUtils.lerp(0.45, 0.12, t);
-                } else if (child.userData.lightRole === 'hemi') {
-                    child.intensity = THREE.MathUtils.lerp(0.5, 0.08, t);
-                } else if (child.userData.lightRole === 'fill') {
-                    child.intensity = THREE.MathUtils.lerp(0.35, 0.02, t);
-                } else if (child.userData.lightRole === 'rim') {
-                    child.intensity = THREE.MathUtils.lerp(0.25, 0.0, t);
-                } else if (child.userData.lightRole === 'lamppost') {
-                    // Lamp posts illuminate brightly at night
-                    if (child.isSpotLight) {
-                        child.intensity = THREE.MathUtils.lerp(0.5, 4.0, t);
-                    } else {
-                        child.intensity = THREE.MathUtils.lerp(0.15, 2.0, t);
-                        child.distance = THREE.MathUtils.lerp(12, 25, t);
-                    }
-                } else if (child.userData.lightRole === 'moon') {
-                    // Moonlight fades in at night
-                    child.intensity = THREE.MathUtils.lerp(0.0, 0.35, t);
-                }
+    // Update lights (cached array, no traversal)
+    for (let i = 0; i < cachedLights.length; i++) {
+        const { light, role } = cachedLights[i];
+        if (role === 'sun') {
+            light.intensity = THREE.MathUtils.lerp(1.8, 0.05, t);
+            _tmpSunColor.copy(_daySunColor).lerp(_nightSunColor, t);
+            light.color.copy(_tmpSunColor);
+        } else if (role === 'ambient') {
+            light.intensity = THREE.MathUtils.lerp(0.45, 0.12, t);
+        } else if (role === 'hemi') {
+            light.intensity = THREE.MathUtils.lerp(0.5, 0.08, t);
+        } else if (role === 'fill') {
+            light.intensity = THREE.MathUtils.lerp(0.35, 0.02, t);
+        } else if (role === 'rim') {
+            light.intensity = THREE.MathUtils.lerp(0.25, 0.0, t);
+        } else if (role === 'lamppost') {
+            if (light.isSpotLight) {
+                light.intensity = THREE.MathUtils.lerp(0.5, 4.0, t);
+            } else {
+                light.intensity = THREE.MathUtils.lerp(0.15, 2.0, t);
+                light.distance = THREE.MathUtils.lerp(12, 25, t);
             }
-        });
+        } else if (role === 'moon') {
+            light.intensity = THREE.MathUtils.lerp(0.0, 0.35, t);
+        }
     }
 
-    // Sun & Moon 3D objects
+    // Sun & Moon 3D objects (cached children, no traversal)
     if (sunMesh) {
         sunMesh.material.opacity = THREE.MathUtils.lerp(1.0, 0.0, t);
-        sunMesh.children.forEach(c => {
-            if (c.material) c.material.opacity = THREE.MathUtils.lerp(c === sunMesh.children[0] ? 0.15 : 0.06, 0.0, t);
-        });
+        for (let i = 0; i < cachedSunChildren.length; i++) {
+            cachedSunChildren[i].material.opacity = THREE.MathUtils.lerp(i === 0 ? 0.15 : 0.06, 0.0, t);
+        }
     }
     if (moonMesh) {
         moonMesh.material.opacity = THREE.MathUtils.lerp(0.0, 0.95, t);
-        moonMesh.traverse(c => {
-            if (c === moonMesh) return;
-            if (c.material && c.userData.isMoonCrater) {
-                c.material.opacity = THREE.MathUtils.lerp(0.0, 0.5, t);
-            } else if (c.material && c.userData.isMoonHalo) {
-                c.material.opacity = THREE.MathUtils.lerp(0.0, 0.04, t);
-            } else if (c === moonGlowMesh && c.material) {
-                c.material.opacity = THREE.MathUtils.lerp(0.0, 0.1, t);
-            }
-        });
+        for (let i = 0; i < cachedMoonChildren.length; i++) {
+            const entry = cachedMoonChildren[i];
+            if (entry.type === 'crater') entry.mesh.material.opacity = THREE.MathUtils.lerp(0.0, 0.5, t);
+            else if (entry.type === 'halo') entry.mesh.material.opacity = THREE.MathUtils.lerp(0.0, 0.04, t);
+            else if (entry.type === 'glow') entry.mesh.material.opacity = THREE.MathUtils.lerp(0.0, 0.1, t);
+        }
     }
 
-    // Window & lamp bulb glow at night
-    scene.traverse((child) => {
-        if (child.isMesh && child.material && child.material.emissiveIntensity !== undefined) {
-            if (child.userData.isWindowLit) {
-                child.material.emissiveIntensity = THREE.MathUtils.lerp(0.4, 2.5, t);
-            } else if (child.userData.isWindowDark) {
-                child.material.emissiveIntensity = THREE.MathUtils.lerp(0.15, 0.8, t);
-            } else if (child.userData.isLampBulb) {
-                // Lamp bulbs glow bright warm at night
-                child.material.emissiveIntensity = THREE.MathUtils.lerp(0.3, 4.0, t);
-                child.material.opacity = THREE.MathUtils.lerp(0.35, 1.0, t);
-            }
-        }
-    });
+    // Window & lamp bulb glow at night (cached arrays, no traversal)
+    for (let i = 0; i < cachedWindowLit.length; i++) {
+        cachedWindowLit[i].material.emissiveIntensity = THREE.MathUtils.lerp(0.4, 2.5, t);
+    }
+    for (let i = 0; i < cachedWindowDark.length; i++) {
+        cachedWindowDark[i].material.emissiveIntensity = THREE.MathUtils.lerp(0.15, 0.8, t);
+    }
+    for (let i = 0; i < cachedLampBulbs.length; i++) {
+        cachedLampBulbs[i].material.emissiveIntensity = THREE.MathUtils.lerp(0.3, 4.0, t);
+        cachedLampBulbs[i].material.opacity = THREE.MathUtils.lerp(0.35, 1.0, t);
+    }
 }
 
 // ─── Loading ────────────────────────────────────────────────
@@ -350,12 +1667,14 @@ async function buildScene() {
     updateLoading(30, 'Setting up the hoops...');
     createHoops(scene);
     hoopColliders = scene.userData.hoopColliders || [];
+    refreshRimSensors();
     playerColliders = hoopColliders.concat(parkColliders);
     await delay(80);
 
     updateLoading(45, 'Planting trees & scenery...');
     createPark(scene);
     parkColliders = scene.userData.parkColliders || [];
+    parkSeats = scene.userData.parkSeats || [];
     playerColliders = hoopColliders.concat(parkColliders);
     await delay(80);
 
@@ -373,6 +1692,9 @@ async function buildScene() {
 
     updateLoading(85, 'Preparing basketball...');
     basketballData = createBasketball(scene);
+    updateScoreHud();
+    createShootingArc();
+    createPassLine();
     await delay(80);
 
     updateLoading(88, 'Placing celestial bodies...');
@@ -383,6 +1705,8 @@ async function buildScene() {
     collectTransparentObjects();
     collectAnimatedObjects();
     tagCityWindows();
+    cacheLightReferences();
+    cacheCelestialChildren();
     await delay(100);
 
     updateLoading(100, 'Game on!');
@@ -393,23 +1717,55 @@ async function buildScene() {
 }
 
 function tagCityWindows() {
+    cachedWindowLit.length = 0;
+    cachedWindowDark.length = 0;
+    cachedLampBulbs.length = 0;
     scene.traverse((child) => {
         if (child.isMesh && child.material) {
-            // Tag lit windows
             if (child.material.emissive && child.material.emissive.getHex() === 0xffcc66) {
                 child.userData.isWindowLit = true;
+                cachedWindowLit.push(child);
             }
-            // Tag dark windows
             if (child.material.emissive && child.material.emissive.getHex() === 0x334455) {
                 child.userData.isWindowDark = true;
+                cachedWindowDark.push(child);
             }
-            // Tag lamp bulbs
             if (child.material.emissive && child.material.emissive.getHex() === 0xffeebb &&
                 child.material.transparent) {
                 child.userData.isLampBulb = true;
+                cachedLampBulbs.push(child);
             }
         }
     });
+}
+
+function cacheLightReferences() {
+    cachedLights.length = 0;
+    if (lightingGroup) {
+        lightingGroup.traverse((child) => {
+            if (child.isLight && child.userData.lightRole) {
+                cachedLights.push({ light: child, role: child.userData.lightRole });
+            }
+        });
+    }
+}
+
+function cacheCelestialChildren() {
+    cachedSunChildren.length = 0;
+    cachedMoonChildren.length = 0;
+    if (sunMesh) {
+        for (const c of sunMesh.children) {
+            if (c.material) cachedSunChildren.push(c);
+        }
+    }
+    if (moonMesh) {
+        moonMesh.traverse(c => {
+            if (c === moonMesh) return;
+            if (c.material && c.userData.isMoonCrater) cachedMoonChildren.push({ mesh: c, type: 'crater' });
+            else if (c.material && c.userData.isMoonHalo) cachedMoonChildren.push({ mesh: c, type: 'halo' });
+            else if (c === moonGlowMesh && c.material) cachedMoonChildren.push({ mesh: c, type: 'glow' });
+        });
+    }
 }
 
 function createCelestialBodies() {
@@ -643,14 +1999,15 @@ function onKeyDown(e) {
             case 'ShiftLeft': case 'ShiftRight': moveState.down = true; e.preventDefault(); break;
         }
     } else if (cameraMode === 'player') {
-        if (shootingStance) {
-            // In shooting stance: W/S = aim angle, A/D = turn, X = shoot, C = cancel
+        if (shootingStance || passingStance) {
+            // In shooting/pass stance: A/D = turn, X = fire, C = cancel
             switch (e.code) {
                 case 'ArrowUp':    case 'KeyW': shootInput.aimUp = true; e.preventDefault(); break;
                 case 'ArrowDown':  case 'KeyS': shootInput.aimDown = true; e.preventDefault(); break;
                 case 'ArrowLeft':  case 'KeyA': shootInput.turnLeft = true; e.preventDefault(); break;
                 case 'ArrowRight': case 'KeyD': shootInput.turnRight = true; e.preventDefault(); break;
                 case 'KeyX': shootQueued = true; e.preventDefault(); break;
+                case 'KeyZ': if (passingStance) { passQueued = true; } e.preventDefault(); break;
                 case 'KeyC': cancelShootQueued = true; e.preventDefault(); break;
             }
         } else {
@@ -660,11 +2017,30 @@ function onKeyDown(e) {
                 case 'ArrowLeft':  case 'KeyA': playerInput.left = true; e.preventDefault(); break;
                 case 'ArrowRight': case 'KeyD': playerInput.right = true; e.preventDefault(); break;
                 case 'Space': playerInput.jump = true; e.preventDefault(); break;
-                case 'KeyZ': pickupQueued = true; e.preventDefault(); break;
+                case 'KeyZ':
+                    // If holding ball and teammates exist → pass; otherwise pickup
+                    if (basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData && teammates.length > 0) {
+                        passQueued = true;
+                    } else {
+                        pickupQueued = true;
+                        pickupAssistTimer = PICKUP_ASSIST_DURATION;
+                    }
+                    e.preventDefault();
+                    break;
                 case 'KeyX':
-                    // Enter shooting stance if holding ball and grounded
-                    if (basketballData?.heldByPlayer && playerData?.isGrounded) {
+                    // Grounded + hold ball = shot stance. Mid-air + near rim = dunk attempt.
+                    if (basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData) {
                         shootQueued = true;
+                    }
+                    e.preventDefault();
+                    break;
+                case 'KeyC':
+                    sitToggleQueued = true;
+                    e.preventDefault();
+                    break;
+                case 'KeyV':
+                    if (playerData && !shootingStance && !dunkState && !sitState && playerData.stunTimer <= 0) {
+                        playerData.punchQueued = true;
                     }
                     e.preventDefault();
                     break;
@@ -728,13 +2104,21 @@ function switchCameraMode(mode) {
         playerData.group.visible = false;
         playerData.velocity.set(0, 0, 0);
         playerData.velocityY = 0;
-        Object.keys(playerInput).forEach(k => playerInput[k] = false);
-        Object.keys(shootInput).forEach(k => shootInput[k] = false);
+        playerData._pickupAssistActive = false;
+        resetPlayerInput();
+        resetShootInput();
         pickupQueued = false;
+        pickupAssistTimer = 0;
+        sitToggleQueued = false;
         shootQueued = false;
         cancelShootQueued = false;
         shootingStance = false;
         shootAngle = 52;
+        shootTurnVelocity = 0;
+        dunkState = null;
+        sitState = null;
+        if (basketballData) basketballData._dunkControl = false;
+        resetPowerMeterCycle();
     }
 
     cameraMode = mode;
@@ -746,7 +2130,7 @@ function switchCameraMode(mode) {
         controls.minDistance = 5;
         controls.maxDistance = 150;
         controls.update();
-        Object.keys(moveState).forEach(k => moveState[k] = false);
+        resetMoveState();
         pickupQueued = false;
     } else if (mode === 'freeroam') {
         controls.enabled = false;
@@ -766,7 +2150,7 @@ function switchCameraMode(mode) {
             controls.maxDistance = 18;
             controls.update();
         }
-        Object.keys(moveState).forEach(k => moveState[k] = false);
+        resetMoveState();
     }
     updateModeUI();
 }
@@ -787,7 +2171,7 @@ function updateModeUI() {
         } else if (cameraMode === 'freeroam') {
             hint.textContent = 'Click to capture mouse | WASD / Arrows to move | Mouse to look | Space up | Shift down | ESC release';
         } else if (cameraMode === 'player') {
-            hint.textContent = 'WASD / Arrows to walk | Space jump | Z pick up ball | X shoot (hold ball) | In shot stance: W/S aim angle, A/D turn, X shoot, C cancel';
+            hint.textContent = 'WASD / Arrows to walk | Space jump | Z pick up / pass ball | V punch | C sit/stand | X shoot (hold ball) | Mid-air near rim: X dunk | In stance: A/D turn, X release, C cancel';
         }
     }
 }
@@ -806,9 +2190,10 @@ function animate() {
     requestAnimationFrame(animate);
     const rawDelta = clock.getDelta();
     const clampedDelta = Math.min(rawDelta, 0.05);
-    smoothedDelta += (clampedDelta - smoothedDelta) * 0.18;
+    smoothedDelta += (clampedDelta - smoothedDelta) * 0.45;
     const delta = smoothedDelta;
     stabilizedElapsed += delta;
+    updatePowerMeter(delta, gameStarted && cameraMode === 'player' && (shootingStance || passingStance));
 
     if (startMenuActive) {
         updateStartMenuCamera(delta);
@@ -828,38 +2213,90 @@ function animate() {
         }
         playerMoveRight.crossVectors(playerMoveForward, worldUp).normalize();
 
-        if (pickupQueued && basketballData && !basketballData.heldByPlayer) {
-            tryPickUpBasketball(basketballData, playerData);
+        if (sitToggleQueued) {
+            if (sitState) {
+                startStandingFromSeat();
+            } else {
+                const seat = findNearestSeat();
+                if (seat) startSittingOnSeat(seat);
+            }
+            sitToggleQueued = false;
+        }
+
+        if (sitState) {
+            updateSeating(delta);
+            pickupAssistTimer = 0;
+            playerData._pickupAssistActive = false;
             pickupQueued = false;
+        } else {
+            updatePickupAssist(delta);
         }
 
         // ── Shooting state machine ────────────────────────
-        if (shootingStance) {
+        if (playerData?.stunTimer > 0) {
+            // Stunned — cancel all stances and block actions
+            if (shootingStance) {
+                shootingStance = false;
+                if (basketballData) basketballData._shootingStance = false;
+            }
+            if (passingStance) {
+                passingStance = false;
+                passTargetTeammate = null;
+                if (basketballData) basketballData._passingStance = false;
+            }
+            shootQueued = false;
+            passQueued = false;
+            cancelShootQueued = false;
+            pickupQueued = false;
+            resetShootInput();
+            resetPlayerInput();
+        } else if (sitState) {
+            shootingStance = false;
+            shootQueued = false;
+            cancelShootQueued = false;
+            resetShootInput();
+            resetPlayerInput();
+        } else if (dunkState) {
+            shootingStance = false;
+            shootQueued = false;
+            cancelShootQueued = false;
+            resetShootInput();
+            resetPlayerInput();
+        } else if (shootingStance) {
             // Cancel shooting stance
             if (cancelShootQueued) {
                 shootingStance = false;
                 if (basketballData) basketballData._shootingStance = false;
                 shootAngle = 52;
+                shootTurnVelocity = 0;
                 cancelShootQueued = false;
                 shootQueued = false;
-                Object.keys(shootInput).forEach(k => shootInput[k] = false);
+                resetShootInput();
+                resetPowerMeterCycle();
             }
             // Ball was lost (dribble collision, etc.)
             else if (!basketballData?.heldByPlayer) {
                 shootingStance = false;
                 if (basketballData) basketballData._shootingStance = false;
                 shootAngle = 52;
+                shootTurnVelocity = 0;
                 shootQueued = false;
-                Object.keys(shootInput).forEach(k => shootInput[k] = false);
+                resetShootInput();
+                resetPowerMeterCycle();
             }
             // Fire the shot
             else if (shootQueued) {
+                const releasePower = shotPowerMultiplier;
+                lockPowerMeter(releasePower);
+                shotsAttempted += 1;
+                updateScoreHud();
                 basketballData._shootingStance = false;
-                shootBasketball(basketballData, playerData, shootAngle);
+                shootBasketball(basketballData, playerData, shootAngle, releasePower);
                 shootingStance = false;
                 shootAngle = 52;
+                shootTurnVelocity = 0;
                 shootQueued = false;
-                Object.keys(shootInput).forEach(k => shootInput[k] = false);
+                resetShootInput();
             }
             else {
                 // Adjust aim angle with W/S
@@ -870,42 +2307,142 @@ function animate() {
                     shootAngle = Math.max(SHOOT_ANGLE_MIN, shootAngle - SHOOT_ANGLE_SPEED * delta);
                 }
 
-                // Turn player with A/D (rotate facing angle directly)
-                const turnRate = 2.2; // radians per second
-                if (shootInput.turnLeft) {
-                    playerData.facingAngle -= turnRate * delta;
-                    playerData.group.rotation.y = playerData.facingAngle;
-                }
-                if (shootInput.turnRight) {
-                    playerData.facingAngle += turnRate * delta;
-                    playerData.group.rotation.y = playerData.facingAngle;
-                }
+                // Velocity-based turning — smooth ramp up/down, precise stops
+                let turnTarget = 0;
+                if (shootInput.turnLeft) turnTarget += 1;
+                if (shootInput.turnRight) turnTarget -= 1;
+
+                const desiredVel = turnTarget * SHOOT_TURN_MAX;
+                const rate = turnTarget !== 0 ? SHOOT_TURN_ACCEL : SHOOT_TURN_DECEL;
+                shootTurnVelocity += (desiredVel - shootTurnVelocity) * (1 - Math.exp(-rate * delta));
+                if (Math.abs(shootTurnVelocity) < 0.005) shootTurnVelocity = 0;
+
+                playerData.facingAngle += shootTurnVelocity * delta;
+                playerData.group.rotation.y = playerData.facingAngle;
             }
 
             // Zero movement input so player stands still
-            Object.keys(playerInput).forEach(k => playerInput[k] = false);
-        } else if (shootQueued && basketballData?.heldByPlayer && playerData?.isGrounded) {
+            resetPlayerInput();
+        } else if (shootQueued && !passingStance && basketballData?.heldByPlayer && !playerData?.isGrounded) {
+            const dunkRim = findDunkRim();
+            if (dunkRim) {
+                startDunk(dunkRim);
+            }
+            shootQueued = false;
+        } else if (shootQueued && !passingStance && basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData && playerData?.isGrounded) {
             // Enter shooting stance
             shootingStance = true;
+            shootTurnVelocity = 0;
+            resetPowerMeterCycle();
             basketballData._shootingStance = true;
             shootQueued = false;
             // Stop the player
             playerData.velocity.set(0, 0, 0);
-            Object.keys(playerInput).forEach(k => playerInput[k] = false);
+            resetPlayerInput();
         } else {
             shootQueued = false;
         }
 
-        const carryState = basketballData?.heldByPlayer
-            ? {
-                holding: true,
-                shooting: shootingStance,
-                dribbling: !shootingStance && !!basketballData.dribblingByPlayer,
-                dribblePhase: basketballData.dribblePhase || 0
+        // ── Pass state machine ──────────────────────────────
+        // Handle active pass stance FIRST (so Z/X fire works before entry block clears passQueued)
+        if (passingStance) {
+            if (cancelShootQueued) {
+                // C cancels pass stance
+                passingStance = false;
+                passTargetTeammate = null;
+                if (basketballData) basketballData._passingStance = false;
+                cancelShootQueued = false;
+                resetPowerMeterCycle();
+            } else if (shootQueued || passQueued) {
+                // X or Z fires the aimed pass along facing direction
+                const releasePower = shotPowerMultiplier;
+                lockPowerMeter(releasePower);
+                executePassAimed(releasePower);
+                passingStance = false;
+                passTargetTeammate = null;
+                if (basketballData) basketballData._passingStance = false;
+                resetPowerMeterCycle();
+            } else {
+                // A/D rotate player to aim
+                let turnTarget = 0;
+                if (shootInput.turnLeft) turnTarget += 1;
+                if (shootInput.turnRight) turnTarget -= 1;
+                if (Math.abs(turnTarget) > 0.01) {
+                    shootTurnVelocity += (turnTarget * SHOOT_TURN_MAX - shootTurnVelocity)
+                        * (1 - Math.exp(-SHOOT_TURN_ACCEL * delta));
+                } else {
+                    shootTurnVelocity *= Math.exp(-SHOOT_TURN_DECEL * delta);
+                }
+                playerData.facingAngle += shootTurnVelocity * delta;
+                playerData.group.rotation.y = playerData.facingAngle;
             }
-            : null;
+            shootQueued = false;
+            passQueued = false;
+            resetPlayerInput();
+            resetShootInput();
+        } else if (passQueued && basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData
+            && !shootingStance && !dunkState && !sitState) {
+            // Enter pass mode (not already in pass stance)
+            const target = findNearestTeammate();
+            if (target) {
+                const dist = distToTeammate(target);
+                if (dist <= PASS_CLOSE_RADIUS) {
+                    // Quick chest pass — no stance needed
+                    executePass(target, 'chest');
+                } else {
+                    // Enter pass stance for aimed/far pass
+                    passingStance = true;
+                    passTargetTeammate = target;
+                    shootTurnVelocity = 0;
+                    basketballData._passingStance = true;
+                    resetPowerMeterCycle();
+                    playerData.velocity.set(0, 0, 0);
+                    // Face toward teammate
+                    const dx = target.group.position.x - playerData.group.position.x;
+                    const dz = target.group.position.z - playerData.group.position.z;
+                    playerData.facingAngle = Math.atan2(dx, dz);
+                    playerData.group.rotation.y = playerData.facingAngle;
+                    resetPlayerInput();
+                }
+            }
+            passQueued = false;
+        } else {
+            passQueued = false;
+        }
+
+        const needsCarry = !!(basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData || dunkState || sitState);
+        let carryState = null;
+        if (needsCarry) {
+            _carryState.holding = !!(basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData);
+            _carryState.shooting = shootingStance;
+            _carryState.dribbling = !shootingStance && !passingStance && !dunkState && !sitState && !!basketballData?.dribblingByPlayer && basketballData.heldByPlayerData === playerData;
+            _carryState.dribblePhase = basketballData?.dribblePhase || 0;
+            _carryState.dunking = !!dunkState && dunkState.phase !== 'hang';
+            _carryState.hanging = !!dunkState && dunkState.phase === 'hang';
+            _carryState.seated = !!sitState;
+            _carryState.seatSettled = !!sitState && sitState.phase === 'sit';
+            carryState = _carryState;
+        }
+
+        if (sitState) {
+            resetPlayerInput();
+            playerData.velocity.set(0, 0, 0);
+            playerData.velocityY = 0;
+            playerData.isGrounded = true;
+            playerData.isJumping = false;
+        } else if (dunkState) {
+            resetPlayerInput();
+            playerData.velocity.set(0, 0, 0);
+            playerData.velocityY = 0;
+            playerData.isGrounded = false;
+            playerData.isJumping = true;
+        }
 
         updatePlayer(playerData, delta, playerInput, playerMoveBasis, playerColliders, carryState);
+
+        if (dunkState) {
+            updateDunk(delta);
+        }
 
         // Smooth camera follow — orbit target tracks player position
         const pp = playerData.group.position;
@@ -918,7 +2455,42 @@ function animate() {
         pickupQueued = false;
     }
 
-    updateBasketball(basketballData, delta, playerColliders, playerData);
+    // ── Update opponents ─────────────────────────────
+    updateOpponentColliders();
+    for (const opp of opponents) {
+        updateOpponentAI(opp, delta);
+    }
+
+    // ── Update teammates ──────────────────────────────
+    const allPlayers = (teammates.length > 0 || opponents.length > 0)
+        ? [playerData, ...teammates, ...opponents] : null;
+    for (const tm of teammates) {
+        updateTeammateAI(tm, delta);
+    }
+
+    // ── Punch collision detection ────────────────────
+    updatePunchCollisions();
+
+    updateBasketball(basketballData, delta, playerColliders, playerData, allPlayers);
+
+    // ── Teammate & opponent catch detection ──────────
+    if (basketballData?.active && !basketballData.heldByPlayer) {
+        for (const tm of teammates) {
+            if (tryTeammateCatch(basketballData, tm)) break;
+        }
+        // Opponents also try to pick up free balls nearby
+        for (const opp of opponents) {
+            if (opp.stunTimer > 0) continue;
+            if (tryPickUpBasketball(basketballData, opp)) {
+                opp._holdSeed = Math.random();
+                break;
+            }
+        }
+    }
+
+    updateScoringSystem(delta);
+    updateShootingArc(delta);
+    updatePassLine(delta);
 
     updateDayNight(delta);
 
@@ -948,6 +2520,8 @@ window.switchCameraMode = switchCameraMode;
 window.toggleTransparentHelpers = toggleTransparentHelpers;
 window.toggleDayNight = toggleDayNight;
 window.dropBall = dropBall;
+window.addTeammate = addTeammate;
+window.addOpponent = addOpponent;
 window.startGame = startGame;
 
 // ─── Start ──────────────────────────────────────────────────
