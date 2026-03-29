@@ -6,7 +6,7 @@ Hoops Royale is a **street basketball game** built entirely in **Three.js** (v0.
 
 The vision: a gritty, NYC street basketball experience. Think Central Park pickup games with chain-link fences, graffiti, cracked asphalt, and city skyline all around. The game starts at a worn-down public court and will eventually progress to better courts as the player advances.
 
-## Current State (as of March 2026)
+## Current State (as of March 29, 2026)
 
 **What exists:**
 - A fully built, explorable 3D environment (court, park, city)
@@ -18,15 +18,24 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - **Shooting arc visualization** — subtle red arc line showing projected trajectory during aim stance, with fade in/out animation
 - **Power meter** — vertical oscillating bar (right side of screen) that determines shot strength (0.55x–1.15x) with sweet spot indicator; locks on X press. Shared between shooting and passing stances.
 - **Torus rim collision** — ball passes through open center of rim while bouncing off the metal tube; full 3D bounce normals
-- **Scoring detection** — Y-plane crossing + radial containment check detects made baskets; tracks points, makes, and attempts
-- **Score HUD** — top-left score display with points and makes/attempts ratio; shot feedback popup ("Bucket +2") with CSS fade
-- **Dunk system** — multi-phase animation (approach → slam → hang → release) triggered by pressing X while airborne near rim
-- **Seating system** — sit on benches/bleachers (C key) with smooth enter/exit transitions and seated pose animation
+- **Scoring detection** — Y-plane crossing + radial containment check detects made baskets; tracks points, makes, and attempts. Score attribution via `_lastShooterRef` on the ball — determines whether player team or opponent team gets the points.
+- **Score HUD** — top-left player score display (points + makes/attempts); top-right opponent score display (blue-tinted glassmorphism); shot feedback popup ("Bucket +2" / "OPP Dunk +2") with CSS fade
+- **Dunk system** — multi-phase animation (approach → slam → hang → release) triggered by pressing X while airborne near rim. Works for both the player and opponents (opponent dunk is AI-triggered).
+- **Seating system** — sit on benches/bleachers (C key for player) with smooth enter/exit transitions and seated pose animation. AI players can also sit on benches to recover stamina (walking → entering → seated → exiting phases with smooth transitions and forward step on exit).
 - **Punch system** — V key throws alternating hook punches (or free-hand punch while dribbling). Fast 3-phase animation: extend (0.08s) → hold (0.04s) → retract (0.16s). Blends on top of any current arm pose.
-- **Punch impact & stun system** — punches that connect with another player's body cause: ball drop (ball pops up and away), 1-second stun with flinch animation (arms drop limp, knees buckle, recoil pushback in hit direction), all actions blocked during stun. Works between all player entities (user, teammates, opponents).
-- **Teammate system** — up to 3 AI teammates (red jerseys with canvas-drawn numbers: 5, 11, 32). Wander the court, walk toward player when holding ball, auto-pass back after 0.4-1.5s hold.
-- **Passing system** — Z key to pass (close auto-pass within 5m, far aimed pass with red line + power meter). Pass stance: chest-level ball hold, A/D to aim, X or Z to fire, C to cancel. Mutual exclusion with shooting stance.
-- **Opponent system** — up to 3 AI opponents (blue jerseys `0x2266cc` with numbers: 3, 7, 24). Full AI: pursue free balls, pick up and dribble (hold 1.5-3.5s then drop), chase player aggressively when player has ball, throw random punches when close. Cylinder colliders prevent walking through.
+- **Punch impact & stun system** — punches that connect with another player's body cause: ball drop (ball pops up and away), 1.8-second stun with flinch animation (arms drop limp, knees buckle, recoil pushback in hit direction), all actions blocked during stun. Works between all player entities (user, teammates, opponents). Cancels active dunks on hit.
+- **Stamina / energy system** — all players (user, teammates, opponents) have stamina (0-100). Drains from: running (3/sec), punching (10), shooting (15), passing (6), dunking (18), jumping (7). Recovers: idle standing (1.5/sec), sitting on bench (22/sec). Below 20 stamina: movement speed reduced to 62%. Below 5: can't punch/shoot/dunk. AI opponents drop the ball and seek benches when stamina < 22, leave bench when > 85. Visual: 3D overhead stamina bars on AI players (billboard-aligned to camera using inverse parent quaternion), HUD bar for user (left side, below score).
+- **Teammate system** — up to 3 AI teammates (red jerseys with canvas-drawn numbers: 5, 11, 32). Wander the court, walk toward player when holding ball, auto-pass back when close or after hold timer. Evade opponents when holding ball (with court boundary awareness: ±11m X, ±19m Z). Seek benches when stamina is low.
+- **Passing system** — Z key to pass (close auto-pass within 5m, far aimed pass with red line + power meter). Pass stance: chest-level ball hold, A/D to aim, X or Z to fire, C to cancel. Mutual exclusion with shooting stance. Opponents also pass between each other when pressured or after holding too long.
+- **Opponent system** — up to 3 AI opponents (blue jerseys `0x2266cc` with numbers: 3, 7, 24). Full AI with multi-state behavior:
+  - **Ball pursuit**: chase free balls, pick up within 0.65m
+  - **Ball holding**: dribble toward player's rim, enter shooting prep when in range (1.8–9.0m), attempt dunks when very close (< 2.8m, 65% chance), pass to open teammates when pressured or held too long
+  - **Shooting**: wind-up animation (0.45s), face rim, shoot with random angle (48-56°) and power (0.88-1.06x), tracks shots attempted/made
+  - **Dunking**: AI-triggered multi-phase dunk (same approach → slam → hang → release as player), auto-scores, 18 stamina cost
+  - **Chase**: pursue whoever has the ball — player OR teammates — with aggressive approach + random punches when close (< 1.4m)
+  - **Positioning**: when a teammate opponent has the ball, other opponents spread out near the target rim
+  - **Bench recovery**: drop ball and walk to nearest bench when stamina < 22, sit with smooth transitions, leave when > 85
+  - Cylinder colliders (radius 0.44) prevent walking through, 1.1m minimum approach distance
 - Collision system for both player and ball against environment objects (benches, trash cans, bleachers, fence posts, hoop poles, backboards)
 - Dribble-time collision release (ball bounces off objects while being dribbled and escapes player control)
 - Three camera modes: Orbit, Free Roam, and Drop In (player control with camera-relative movement)
@@ -42,12 +51,12 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - Multiplayer
 - Court progression system
 - Player customization
-- Jump shots / running shots (shooting only while stationary)
+- Jump shots / running shots (shooting only while stationary for player; opponents shoot from standing)
 - Three-point detection (all baskets score 2 points currently)
-- Opponent shooting/scoring AI (opponents grab ball but just dribble and drop it)
-- Teammate shooting AI (teammates only pass back to player)
+- Teammate shooting AI (teammates only pass back to player, don't shoot or score)
+- Ball stealing (opponents can only get the ball via pickup after drop, punch-forced drop, or catching passes)
 
-The project is at the **multi-player interaction stage**. Teammates and opponents exist with AI behaviors, passing works, punching causes stun and ball drops. The next major milestone is **game modes, opponent scoring AI, and three-point detection**.
+The project is at the **competitive gameplay stage**. Both teams can score — opponents have full shooting and dunking AI with team passing. A stamina system adds resource management (bench recovery). The next major milestone is **game modes, three-point detection, and sound**.
 
 ---
 
@@ -87,19 +96,19 @@ The `package.json` exists solely to set `"type": "module"` so that `node --check
 
 ```
 Hoops-Royale/
-├── index.html          # Entry point, UI buttons, HUD elements, CSS, importmap (~480 lines)
+├── index.html          # Entry point, UI buttons, HUD elements, CSS, importmap (~591 lines)
 ├── package.json        # Just { "type": "module" } for node --check
 ├── CLAUDE.md           # This file
 ├── .gitignore
 └── js/
-    ├── main.js         # Scene setup, camera, controls, day/night, gameplay state machines, AI, animation loop (~2530 lines)
+    ├── main.js         # Scene setup, camera, controls, day/night, gameplay state machines, AI, stamina, animation loop (~3270 lines)
     ├── court.js        # Basketball court surface, lines, paint, graffiti (~672 lines)
     ├── hoops.js        # Hoop assemblies (poles, backboards, rims, chain nets) (~479 lines)
     ├── park.js         # Fencing, trees, benches, bleachers, lamps, paths, seat data (~1195 lines)
     ├── city.js         # Buildings, streets, sidewalks, cars, street props (~707 lines)
     ├── lighting.js     # All scene lights (sun, ambient, hemi, fill, rim, lampposts, moon) (~86 lines)
-    ├── player.js       # Player model, joints, walk/jump/idle/carry/shoot/dunk/sit/punch/stun animation, collision (~1056 lines)
-    └── ball.js         # Basketball creation, physics, dribbling, pickup, shooting, passing, torus rim collision (~1156 lines)
+    ├── player.js       # Player model, joints, walk/jump/idle/carry/shoot/dunk/sit/punch/stun animation, collision, stamina bar (~1129 lines)
+    └── ball.js         # Basketball creation, physics, dribbling, pickup, shooting, passing, torus rim collision (~1157 lines)
 ```
 
 ### Module Dependency Graph
@@ -112,7 +121,7 @@ index.html
         ├── js/park.js       → createPark(scene)           [sets scene.userData.parkColliders]
         ├── js/city.js       → createCity(scene)
         ├── js/lighting.js   → createLighting(scene)
-        ├── js/player.js     → createPlayer(scene, options), updatePlayer(pd, delta, input, movementBasis, colliders, carryState), getPunchFistPosition(pd), applyStun(pd, dirX, dirZ), PUNCH_HIT_RADIUS
+        ├── js/player.js     → createPlayer(scene, options), updatePlayer(pd, delta, input, movementBasis, colliders, carryState), getPunchFistPosition(pd), applyStun(pd, dirX, dirZ), updateStaminaBar(pd, camera), PUNCH_HIT_RADIUS
         └── js/ball.js       → createBasketball(scene), dropBasketballAtCenter(ball), tryPickUpBasketball(ball, playerData), updateBasketball(ball, delta, colliders, playerData, allPlayers), shootBasketball(ball, playerData, angleDeg, powerMult), passBallToTarget(ball, from, targetPos, type), tryTeammateCatch(ball, tmData), forceDropBall(ball, hitDirX, hitDirZ)
 ```
 
@@ -122,9 +131,9 @@ Every environment module exports a single factory function that creates a `THREE
 
 ## Detailed File Guide
 
-### `main.js` (~2530 lines) — The Brain
+### `main.js` (~3270 lines) — The Brain
 
-This is the orchestrator. It owns the renderer, scene, camera, controls, all gameplay state machines, teammate/opponent AI, and the animation loop.
+This is the orchestrator. It owns the renderer, scene, camera, controls, all gameplay state machines, teammate/opponent AI, stamina system, and the animation loop.
 
 **Key systems:**
 
@@ -141,15 +150,29 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 8. **Tag system**: After scene build, `collectTransparentObjects()`, `collectAnimatedObjects()`, and `tagCityWindows()` traverse the scene tree to tag/cache meshes for runtime behavior
 9. **Shooting arc visualization**: `createShootingArc()` builds a 60-point `THREE.Line` with `BufferGeometry`. `updateShootingArc(delta)` replicates the exact projectile math from ball.js to show the predicted trajectory as a subtle red arc line. Fades in/out with exponential smoothing.
 10. **Power meter**: `updatePowerMeter(delta, active)` oscillates a triangle wave at 1.0 cycle/sec, mapping to 0.55x–1.15x shot power. `lockPowerMeter()` freezes the bar briefly on shot release for feedback. DOM elements styled as a vertical bar with sweet spot zone.
-11. **Scoring system**: `refreshRimSensors()` extracts rim positions from `isRim` colliders. `updateScoringSystem(delta)` detects ball crossing the rim Y-plane from above (`prevY > rimY` → `currY <= rimY`, velocity.y < -0.2), then enters a pending state requiring the ball to drop 0.28m below rim while staying centered (< 86% rim radius). Confirmed = `registerMadeBasket()` → updates score, shows feedback popup.
+11. **Scoring system**: `refreshRimSensors()` extracts rim positions from `isRim` colliders. `updateScoringSystem(delta)` detects ball crossing the rim Y-plane from above (`prevY > rimY` → `currY <= rimY`, velocity.y < -0.2), then enters a pending state requiring the ball to drop 0.28m below rim while staying centered (< 86% rim radius). Confirmed = `registerMadeBasket()` → updates score, shows feedback popup. **Score attribution**: `basketballData._lastShooterRef` is set when any player shoots or dunks. `registerMadeBasket()` checks this ref — if the shooter is an opponent (not player, not teammate), points go to `oppTotalScore`; otherwise to `totalScore`.
 12. **Pickup assist**: `updatePickupAssist(delta)` provides a brief magnetism window (0.24s) after Z press, gently pulling nearby ball toward the player's hand position for smoother pickups.
 13. **Dunk system**: `findDunkRim()` checks proximity + height + facing when airborne with ball. `startDunk(rim)` initiates multi-phase animation: approach → slam → hang → release. `updateDunk(delta)` interpolates player/ball positions through each phase, auto-scores on slam.
 14. **Seating system**: `findNearestSeat()` checks proximity to `parkSeats`. `startSittingOnSeat(seat)` / `startStandingFromSeat()` initiate smoothStep-interpolated enter/exit transitions. `updateSeating(delta)` handles phase progression (enter → sit → exit).
 15. **Ball Drop**: `dropBall()` function exposed to `window` for the UI button, calls `dropBasketballAtCenter()`
-16. **Teammate system**: `addTeammate()` creates parameterized players (red jerseys with canvas-drawn numbers). `updateTeammateAI(tm, delta)` handles: wander with random pauses, walk toward player when holding ball (dribbling), auto-pass back when close or after 1.5s hold. Stunned teammates skip AI.
-17. **Passing system**: Z key triggers pass. Close teammates (< 5m) get instant auto-pass (`'chest'` type). Far teammates enter pass stance: ball held at chest level (`_passingStance` flag), A/D rotation to aim, red line visualization, power meter shared with shooting. X or Z fires aimed pass, C cancels. Mutual exclusion with shooting stance.
-18. **Opponent system**: `addOpponent()` creates blue-jersey players with cylinder colliders added to `playerColliders`. `updateOpponentAI(opp, delta)` handles multi-state AI: pursue free balls → pick up → dribble around (1.5–3.5s) → drop ball; chase player aggressively when player has ball (random punches when close); wander court when idle. Each opponent filters out its own collider during `updatePlayer` to prevent self-collision.
-19. **Punch collision detection**: `updatePunchCollisions()` runs every frame. For each player with an active punch (blend > 0.5), checks fist world position against all other players' torso regions. On hit: `applyStun()` on target, `forceDropBall()` if holding ball, cancel stances if target is user. One hit per punch swing via `_punchHitLanded` flag.
+16. **Teammate system**: `addTeammate()` creates parameterized players (red jerseys with canvas-drawn numbers). `updateTeammateAI(tm, delta)` handles: wander with random pauses, walk toward player when holding ball (dribbling), auto-pass back when close or after hold timer, evade opponents when holding ball (with boundary awareness ±11m X, ±19m Z). Stunned teammates skip AI. Teammates seek benches when stamina is low.
+17. **Passing system**: Z key triggers pass. Close teammates (< 5m) get instant auto-pass (`'chest'` type). Far teammates enter pass stance: ball held at chest level (`_passingStance` flag), A/D rotation to aim, red line visualization, power meter shared with shooting. X or Z fires aimed pass, C cancels. Mutual exclusion with shooting stance. Opponents also pass between each other via `findOpenOpponentForPass(fromOpp)` when pressured (enemy within 2.5m) or after holding > 4s.
+18. **Opponent system**: `addOpponent()` creates blue-jersey players with cylinder colliders (radius 0.44) added to `playerColliders`. `updateOpponentAI(opp, delta)` handles comprehensive multi-state AI:
+    - **Dunk check** (top priority): if `opp._dunkState` is active, run `updateOppDunk()` and skip normal AI
+    - **Stun check**: if stunned, skip AI, just physics/animation
+    - **Bench sitting**: if `opp._aiSitState` is active, run AI sitting phases (walking → entering → seated → exiting)
+    - **Ball holding**: dribble toward rim, attempt dunk (< 2.8m, 65% chance), enter shoot prep (1.8–9.0m), pass when pressured, low stamina → drop ball and seek bench
+    - **Ball free**: pursue ball, attempt pickup within 0.65m
+    - **Enemy has ball**: chase whoever holds ball (player OR teammate), punch when close (< 1.4m, ~1.2% chance/frame)
+    - **Teammate has ball**: position near target rim for passes
+    - **Default**: wander court with random pauses
+    - Each opponent filters its own collider during `updatePlayer` to prevent self-collision
+19. **Opponent shooting AI**: `opp._shootPrep` flag enters wind-up phase (0.45s). Opponent faces rim, then shoots with random angle (48-56°) and power (0.88-1.06x). Shot attempts/makes tracked in `oppShotsAttempted`/`oppShotsMade`. Shooting stance uses `carryState.shooting = true` for overhead arm pose.
+20. **Opponent dunk system**: `findOppDunkRim(opp, targetRimZ)` finds nearby rim. `startOppDunk(opp, rim)` initiates multi-phase dunk on `opp._dunkState` (same approach → slam → hang → release as player dunk). Opponent gets jump boost (velocityY = 7.5), auto-scores on slam, ball released with downward velocity. Costs 18 stamina. Punching mid-dunk cancels it and drops ball.
+21. **Stamina system**: `updateStaminaForPlayer(pd, delta, isSitting)` runs for all players each frame. Drains from actions (running, jumping, punching, shooting, passing, dunking), recovers while idle or sitting. `drainStamina(pd, amount)` / `recoverStamina(pd, amount)` clamp to 0-100. Below `STAMINA_LOW_THRESH` (20): `speedMultiplier` reduces movement speed. Below `STAMINA_EXHAUSTED` (5): can't punch/shoot/dunk. AI seeks bench below 22, leaves above 85.
+22. **AI sitting system**: `findNearestSeatForAI(pd)` finds closest unoccupied bench. `updateAISitting(pd, delta)` manages 4 phases: walking (approach bench, threshold 1.6m), entering (smooth lerp to seated position using `SIT_ROOT_OFFSET`, 0.3s), seated (recover stamina, leave when > 85), exiting (stand + step forward in seat facing direction, 0.45s). Empty collider arrays passed during enter/seated/exit to prevent bench AABB from fighting the position lerps.
+23. **3D stamina bars**: Created in `player.js` via `createPlayer` — a PlaneGeometry background + fill mesh positioned at `PLAYER_HEIGHT + 0.18` above player root. `updateStaminaBar(pd, camera)` in player.js handles billboard alignment (inverse parent quaternion × camera quaternion), fill scale/color (green → yellow → red), and fade in/out based on stamina changes. Shown on AI players; user has a HUD bar instead.
+24. **Punch collision detection**: `updatePunchCollisions()` runs every frame. For each player with an active punch (blend > 0.5), checks fist world position against all other players' torso regions. On hit: `applyStun()` on target, `forceDropBall()` if holding ball, cancel stances/dunks if applicable. One hit per punch swing via `_punchHitLanded` flag.
 
 **Important global state:**
 - `lightingGroup` — reference to the lighting group, traversed during day/night updates
@@ -169,9 +192,10 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 - `shootInput` — `{ aimUp, aimDown, turnLeft, turnRight }` flags for stance controls
 - `shotPowerMultiplier` — current power value from meter oscillation
 - `powerMeterPhase`, `powerMeterNorm`, `powerMeterOpacity`, `powerMeterLockTimer` — power meter animation state
-- `totalScore`, `shotsMade`, `shotsAttempted` — scoring state
+- `totalScore`, `shotsMade`, `shotsAttempted` — player team scoring state
+- `oppTotalScore`, `oppShotsMade`, `oppShotsAttempted` — opponent team scoring state
 - `scoreCooldown`, `pendingMake`, `scorePrevBallValid`, `scorePrevBallPos` — scoring detection state
-- `dunkState` — multi-phase dunk animation state (null when not dunking)
+- `dunkState` — multi-phase player dunk animation state (null when not dunking); opponents use `opp._dunkState` instead
 - `sitState` — seating animation state (null when not seated)
 - `sitToggleQueued` — set true on F keypress, consumed next frame
 - `sunMesh`, `moonMesh`, `moonGlowMesh` — celestial body references
@@ -222,12 +246,20 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 - Pass stance and shooting stance are mutually exclusive — cannot enter one while in the other
 - Pass fire check runs BEFORE pass entry check to prevent `passQueued` from being cleared prematurely
 
-**Opponent AI state machine** (per opponent, every frame):
-- If stunned → skip AI, just run physics/animation with no input
-- If holding ball → wander while dribbling, drop ball after 1.5–3.5s
-- If ball is free → pursue ball, attempt pickup when within 0.9m
-- If player has ball → chase aggressively (< 8m), throw random punches when close (< 1.2m, ~1.2% chance/frame)
-- Default → wander court with random pauses (0.8–2.0s)
+**Opponent AI state machine** (per opponent, every frame — priority order):
+1. If `_dunkState` active → run `updateOppDunk()`, skip all other AI. If stunned mid-dunk → cancel dunk, force drop ball.
+2. If stunned → skip AI, just run physics/animation with no input. Cancel sitting state.
+3. If `_aiSitState` active → run `updateAISitting()` phases (walking/entering/seated/exiting). Drop ball before entering.
+4. If holding ball → complex sub-state machine:
+   - Low stamina (< 22) → force drop ball, seek bench
+   - Very close to rim (< 2.8m) + enough stamina → attempt dunk (65% chance) via `startOppDunk()`
+   - In shooting range (1.8–9.0m) + not pressured + held > 0.5s → enter `_shootPrep` (face rim, 0.45s wind-up, then shoot)
+   - Pressured (enemy < 2.5m) + held > 0.3s, or held > 4.0s → pass to open teammate via `findOpenOpponentForPass()`
+   - Otherwise → dribble toward drive target (aimed at shooting range). Target resets when reached (< 1.0m).
+5. If ball is free → pursue ball, attempt pickup when within 0.65m
+6. If enemy holds ball (player OR teammate) → chase aggressively, punch when close (< 1.4m, ~1.2% chance/frame)
+7. If teammate opponent has ball → position near target rim for receiving passes
+8. Default → wander court with random pauses (0.8–2.0s). Low stamina → seek bench.
 - Each opponent filters its own collider from `playerColliders` during `updatePlayer` to avoid self-collision
 
 **Camera-relative movement** (in player mode): Each frame, `camera.getWorldDirection()` is projected onto the XZ plane and normalized to create a forward vector. The right vector is the cross product with world up. These are passed to `updatePlayer()` as `movementBasis` so WASD/arrow keys move relative to the camera's facing direction, not world axes.
@@ -354,7 +386,7 @@ Returns a `lightGroup` with all lights tagged by `userData.lightRole` for the da
 
 Lamp light positions are calculated to match the lantern positions in park.js: `lanternX = x + facing * 1.4`, `lanternY = 5.05`.
 
-### `player.js` (~1056 lines) — The Player Character
+### `player.js` (~1129 lines) — The Player Character
 
 **Model** (1.88m tall, basketball player proportions):
 - Head: sphere (r=0.105) + headband torus
@@ -390,6 +422,7 @@ All animation is done by rotating the pivot groups around their X axis (and Y/Z 
 - `PLAYER_COLLIDER_RADIUS = 0.22` — used for environment collision resolution
 - `TURN_SPEED = 10` — smooth rotation to face movement direction
 - `moveBlend` — smooth transition factor for walk animation (blends in at rate 14, out at rate 10)
+- `speedMultiplier` — multiplied into target velocity (default 1.0, reduced to 0.62 when stamina is low). Set by `updateStaminaForPlayer()` in main.js.
 - Camera-relative movement via `movementBasis` parameter: input directions are projected onto camera forward/right vectors
 
 **Collision resolution** (`resolvePlayerCollisions`):
@@ -421,6 +454,13 @@ All animation is done by rotating the pivot groups around their X axis (and Y/Z 
 - `isTeammate` — boolean flag stored on playerData
 - `jerseyNumber` — number drawn on jersey front/back via canvas texture
 
+**Stamina-related properties on playerData** (set by `createPlayer`, managed by main.js):
+- `stamina` — current stamina value (0–100, starts at 100)
+- `maxStamina` — maximum stamina (100)
+- `speedMultiplier` — movement speed multiplier (1.0 normal, 0.62 when low stamina)
+- `_justJumped` — flag set in player.js when jump fires, consumed by `updateStaminaForPlayer()` in main.js to drain stamina
+- `_staminaBarGroup`, `_staminaBarFill`, `_staminaBarFillMat` — 3D overhead stamina bar mesh references (for AI players)
+
 **Controls** (handled in main.js):
 - Arrow keys / WASD set `playerInput` flags (or `shootInput` when in shooting/passing stance)
 - Space sets `playerInput.jump`
@@ -430,7 +470,7 @@ All animation is done by rotating the pivot groups around their X axis (and Y/Z 
 - V throws a punch (blocked during stances, stun, seated, dunking)
 - Player smoothly rotates to face movement direction (or velocity-based A/D rotation in stance)
 
-### `ball.js` (~1156 lines) — The Basketball
+### `ball.js` (~1157 lines) — The Basketball
 
 The most complex gameplay module. Handles ball creation, physics simulation, environment/player collision (including torus rim collision), held ball state machine (idle hold + dribbling + shooting/passing stance), dribble-time collision release, shooting with projectile physics, passing between players, teammate catch detection, and force-drop on punch.
 
@@ -458,7 +498,8 @@ The most complex gameplay module. Handles ball creation, physics simulation, env
     _ignorePlayerRef: null,  // player to ignore collision with (for passes)
     _ignorePlayerTimer: 0,   // countdown for ignore window
     _shootingStance: false,  // held overhead for shooting
-    _passingStance: false    // held at chest for passing
+    _passingStance: false,   // held at chest for passing
+    _lastShooterRef: null    // playerData of last player to shoot/dunk (for score attribution)
 }
 ```
 
@@ -574,13 +615,47 @@ The most complex gameplay module. Handles ball creation, physics simulation, env
 - Called when holder is punched — releases ball via `releaseHeldBall`
 - Ball pops up (velocity.y = 3.0) and pushes away in hit direction (2.5 m/s)
 
-### `index.html` (~482 lines) — Entry Point
+### Stamina Constants (in `main.js`)
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `STAMINA_MAX` | 100 | Maximum stamina |
+| `STAMINA_PUNCH_COST` | 10 | Drain per punch |
+| `STAMINA_SHOOT_COST` | 15 | Drain per shot |
+| `STAMINA_PASS_COST` | 6 | Drain per pass |
+| `STAMINA_DUNK_COST` | 18 | Drain per dunk |
+| `STAMINA_JUMP_COST` | 7 | Drain per jump |
+| `STAMINA_RUN_DRAIN` | 3.0/sec | Drain while moving (speed > 0.3) |
+| `STAMINA_IDLE_REGEN` | 1.5/sec | Recovery while standing still |
+| `STAMINA_SIT_REGEN` | 22.0/sec | Recovery while seated on bench |
+| `STAMINA_LOW_THRESH` | 20 | Below this: speed penalty applied |
+| `STAMINA_EXHAUSTED` | 5 | Below this: can't punch/shoot/dunk |
+| `STAMINA_AI_SEEK_BENCH` | 22 | AI drops ball and seeks bench below this |
+| `STAMINA_AI_LEAVE_BENCH` | 85 | AI stands up from bench above this |
+| `STAMINA_SPEED_PENALTY` | 0.62 | Speed multiplier when stamina depleted |
+
+### Opponent Shooting / Dunk Constants (in `main.js`)
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `OPP_SHOOT_RANGE_MIN` | 1.8m | Minimum distance from rim to shoot |
+| `OPP_SHOOT_RANGE_MAX` | 9.0m | Maximum distance from rim to shoot |
+| `OPP_SHOOT_WINDUP` | 0.45s | Time in shoot prep before firing |
+| `OPP_TARGET_RIM_Z` | 12.73 | Z position of the rim opponents attack |
+| `OPP_DUNK_APPROACH_DIST` | 2.8m | Max distance from rim to attempt dunk |
+| `OPP_DUNK_CHANCE` | 0.65 | Probability of dunk vs close-range shot |
+| `OPP_PICKUP_RADIUS` | 0.65m | Distance to attempt ball pickup |
+| `OPPONENT_COLLIDER_RADIUS` | 0.44m | Cylinder collider radius for opponents |
+
+### `index.html` (~591 lines) — Entry Point
 
 - Loading screen with animated progress bar
 - **Start menu overlay**: glassmorphism panel with "Click To Begin" button, title, and eyebrow text
 - HUD overlay with game title
-- **Score HUD** (top-left): Score value + makes/attempts detail, with `hud-hidden` CSS class toggle
-- **Shot feedback popup** (center): "Bucket +2" / "Total N" text with CSS opacity/transform transitions
+- **Score HUD** (top-left): Player score value + makes/attempts detail, with `hud-hidden` CSS class toggle
+- **Opponent Score HUD** (top-right): Opponent score value + makes/attempts, blue-tinted glassmorphism style
+- **Stamina HUD** (left side, below score): Vertical bar with gradient fill (green → yellow → red), percentage label. Glassmorphism style.
+- **Shot feedback popup** (center): "Bucket +2" / "OPP Dunk +2" / "Total N" text with CSS opacity/transform transitions
 - **Power meter** (right side): Vertical bar with track, sweet spot zone, animated marker, and value label. Styled with gradient background, border radius, and backdrop blur
 - 8 UI buttons: Orbit Cam, Free Roam, Drop In, Ball Drop, Panels toggle, Day/Night toggle, Add Teammate (red), Add Opponent (blue)
 - Controls hint text at bottom (updates per camera mode, mentions Z pass, V punch)
@@ -676,36 +751,59 @@ Everything is in meters with Y up. Court center is at world origin (0, 0, 0).
 6. **Dribble only while grounded** — ball returns to chest hold if player jumps while dribbling. No mid-air dribble or ball release.
 7. **Shooting only while stationary** — player must be standing still and grounded to enter shooting stance. No jump shots or running shots yet.
 8. **All baskets score 2 points** — no three-point detection based on shot distance. Need to check player position relative to three-point arc at time of shot.
-9. **main.js is growing large** (~2530 lines) — gameplay systems (scoring, dunking, seating, power meter, teammate/opponent AI, passing) could be extracted into separate modules.
-10. **Opponent AI is basic** — opponents grab the ball and dribble but don't shoot or score. They just hold for a few seconds and drop it.
-11. **No per-player colliders for teammates** — only opponents have cylinder colliders. Teammates can be walked through.
-12. **Dynamic collider array allocation** — `updateOpponentAI` creates a filtered collider array each frame per opponent. Could be optimized with a shared pre-filtered array.
+9. **main.js is very large** (~3270 lines) — gameplay systems (scoring, dunking, seating, stamina, power meter, teammate/opponent AI, passing, opponent dunking) could be extracted into separate modules. This is the most pressing technical debt.
+10. **No per-player colliders for teammates** — only opponents have cylinder colliders. Teammates can be walked through.
+11. **Dynamic collider array allocation** — `updateOpponentAI` creates a filtered collider array each frame per opponent. Could be optimized with a shared pre-filtered array.
+12. **Duplicate dunk code** — player dunk (`findDunkRim`/`startDunk`/`updateDunk`) and opponent dunk (`findOppDunkRim`/`startOppDunk`/`updateOppDunk`) are largely duplicated. Could be refactored into a shared generic dunk system parameterized by player data reference.
+13. **AI bench seat occupancy not tracked** — multiple AI players can target the same bench seat. Should track occupied seats to prevent overlapping.
+14. **No ball stealing mechanic** — opponents can only get the ball via pickup after it's dropped, punch-forced drop, or catching passes. No reach-in steal or interception.
 
 ---
 
 ## Where We Left Off / Next Steps
 
-The game now has **multi-player interactions** working. The player can recruit teammates (pass to them, they pass back) and face opponents (who chase the ball, pick it up, and fight for possession). Punching any player causes a flinch/stun and ball drop. The shoot → score → feedback loop remains fully functional alongside these new systems.
+As of March 29, 2026, the game has **competitive team gameplay** working. Both the player's team and the opponent team can score. Opponents have full AI: dribble toward the rim, shoot from range, dunk up close, pass between each other when pressured, and recover stamina on benches. All players have a stamina system that drains from actions and recovers by resting. Score is tracked separately for each team with dedicated HUD displays.
+
+**What was done in the most recent session (March 29, 2026):**
+- Extended stun duration from 1.0s to 1.8s
+- Fixed opponent ball pickup (reduced pickup radius from 0.9 to 0.65 to match ball.js's PICKUP_RADIUS)
+- Built complete stamina system (drain from all actions, recover idle/seated, speed penalty when low)
+- Added 3D stamina bars above AI players with billboard alignment
+- Added user stamina HUD bar (left side, glassmorphism style)
+- Built AI bench-sitting system (walking → entering → seated → exiting with smooth transitions)
+- Fixed bench exit to step forward instead of floating straight up
+- Made opponents drop ball and seek benches when stamina is low
+- Increased opponent collider radius (0.28 → 0.44) and spacing thresholds to prevent clipping
+- Made opponents chase whoever has ball (player OR teammates), not just player
+- Made teammates evade opponents when holding ball (with boundary awareness)
+- Built opponent passing system (`findOpenOpponentForPass`)
+- Built opponent shooting AI (drive to rim, wind-up, shoot with random variation)
+- Built opponent dunk system (AI-triggered multi-phase dunk near rim, 65% chance vs close-range shot)
+- Added opponent score tracking with dedicated HUD (top-right, blue-tinted)
+- Added `_lastShooterRef` tracking for score attribution
+- Fixed opponent freezing near rim (lowered min shoot range 3.5 → 1.8, added stale drive target reset)
+- Added jump stamina drain (7 per jump)
 
 ### Immediate next steps:
-1. **Opponent shooting AI** — Opponents should attempt to score when they pick up the ball, not just dribble and drop it
-2. **Three-point detection** — Check player distance from basket at shot time; award 3 points for shots beyond the arc
-3. **Teammate colliders** — Add cylinder colliders to teammates so nobody can walk through each other
-4. **Shot types** — Jump shots, layups (close range), mid-range jumpers
+1. **Three-point detection** — Check shooter distance from basket at shot time; award 3 points for shots beyond the arc (7.24m from rim center). This is the biggest missing scoring feature.
+2. **Teammate colliders** — Add cylinder colliders to teammates so nobody can walk through each other
+3. **Teammate shooting AI** — Teammates currently only pass back. They should also drive and shoot when they have the ball.
+4. **Ball stealing** — Opponents should be able to steal the ball from a dribbling player/teammate (reach-in steal mechanic)
 5. **Sound** — Ball bounce, swish, chain net rattle, punch impact, ambient city sounds
 
 ### Medium-term:
-6. **Game modes** — 1v1, 3v3, H-O-R-S-E, free play with rules
-7. **Smarter AI** — Opponents play defense/offense, teammates run plays, ball stealing
-8. **Player customization** — Different jerseys, skin tones, accessories
-9. **Net physics** — Chain net reacts to ball passing through (currently static sway only)
-10. **Refactor main.js** — Extract scoring, dunking, seating, power meter, AI into separate modules
+6. **Game modes** — 1v1, 3v3, H-O-R-S-E, free play with rules (scoring target, possession changes, etc.)
+7. **Shot types** — Jump shots, layups (close range), mid-range jumpers
+8. **Smarter AI** — Defensive positioning, pick-and-roll, teammates run plays
+9. **Refactor main.js** — At ~3270 lines, this is urgent. Extract: stamina system, AI (opponent + teammate), scoring, dunking, seating, power meter into separate modules.
+10. **Net physics** — Chain net reacts to ball passing through (currently static sway only)
+11. **Player customization** — Different jerseys, skin tones, accessories
 
 ### Long-term vision:
-11. **Court progression** — Start at this gritty court, unlock nicer courts as you win
-12. **Career mode** — Street rep system, unlockable gear
-13. **Multiplayer** — WebSocket-based online play
-14. **Mobile controls** — Touch joystick and buttons
+12. **Court progression** — Start at this gritty court, unlock nicer courts as you win
+13. **Career mode** — Street rep system, unlockable gear
+14. **Multiplayer** — WebSocket-based online play
+15. **Mobile controls** — Touch joystick and buttons
 
 ---
 
@@ -744,8 +842,14 @@ The game now has **multi-player interactions** working. The player can recruit t
 
 15. **Scoring detection architecture** — `refreshRimSensors()` extracts rim positions from `isRim` colliders at scene build. `updateScoringSystem(delta)` runs every frame and uses a two-phase detection: (1) entry detection when ball crosses rim Y-plane from above with sufficient downward velocity and is within the entry radius, (2) confirmation when ball drops 0.28m below rim while staying centered. This prevents false positives from balls bouncing on the rim.
 
-16. **Gameplay state machine priority** — In the animate loop, state machines are checked in priority order: stun > seating > dunk > shooting stance > passing stance > dunk trigger (airborne) > stance entry (grounded) > pass entry. Each higher-priority state zeros input and blocks lower states. Stun cancels all active stances and blocks all actions. The `carryState` object passed to `updatePlayer()` includes flags for all states: `holding`, `shooting`, `dribbling`, `dunking`, `hanging`, `seated`, `seatSettled`.
+16. **Gameplay state machine priority** — In the animate loop, state machines are checked in priority order: stun > seating > dunk > shooting stance > passing stance > dunk trigger (airborne) > stance entry (grounded) > pass entry. Each higher-priority state zeros input and blocks lower states. Stun cancels all active stances and blocks all actions. The `carryState` object passed to `updatePlayer()` includes flags for all states: `holding`, `shooting`, `dribbling`, `dunking`, `hanging`, `seated`, `seatSettled`. For opponents, the priority is: active dunk (`_dunkState`) > stun > bench sitting (`_aiSitState`) > ball holding (with sub-priorities: low stamina → dunk attempt → shoot prep → pass → dribble toward rim) > ball pursuit > chase enemy with ball > positioning > wander.
 
 17. **Multi-player collision architecture** — Opponents have cylinder colliders dynamically added to `playerColliders`. `updateOpponentColliders()` syncs collider positions each frame. Each opponent filters out its own collider when calling `updatePlayer` to avoid self-collision. Ball collision in `updateBasketball` checks against `allPlayers` array (user + teammates + opponents) with per-player ignore via `_ignorePlayerRef`/`_ignorePlayerTimer`.
 
-18. **Punch collision architecture** — `updatePunchCollisions()` runs after all players are updated but before basketball update. Uses `getPunchFistPosition(pd)` from player.js which returns the fist's world position (via `elbow.localToWorld()`) only when punch blend > 0.5 and `_punchHitLanded` is false. Checks fist against each other player's torso region (XZ distance < `PUNCH_HIT_RADIUS` 0.55m, Y within 0.5–1.8m above ground). On hit: `applyStun()` sets 1.0s stun timer with recoil direction, `forceDropBall()` pops ball up and away.
+18. **Punch collision architecture** — `updatePunchCollisions()` runs after all players are updated but before basketball update. Uses `getPunchFistPosition(pd)` from player.js which returns the fist's world position (via `elbow.localToWorld()`) only when punch blend > 0.5 and `_punchHitLanded` is false. Checks fist against each other player's torso region (XZ distance < `PUNCH_HIT_RADIUS` 0.55m, Y within 0.5–1.8m above ground). On hit: `applyStun()` sets 1.8s stun timer with recoil direction, `forceDropBall()` pops ball up and away. Also cancels opponent dunk state if mid-dunk.
+
+19. **Stamina system architecture** — Stamina is stored on each playerData object (`pd.stamina`, 0–100). `updateStaminaForPlayer(pd, delta, isSitting)` runs each frame for all players (user, teammates, opponents). Jump drain uses a `_justJumped` flag set in player.js and consumed in main.js. Action drains (punch, shoot, pass, dunk) are called at the point of action in main.js. `speedMultiplier` on playerData is set by the stamina system and read in player.js velocity calculation. The user sees a HUD bar; AI players get 3D billboard bars via `updateStaminaBar(pd, camera)` in player.js.
+
+20. **Opponent dunk architecture** — Parallel to the player dunk system but stored per-opponent on `opp._dunkState` instead of the global `dunkState`. `updateOpponentAI` checks for active `_dunkState` at top priority (before stun check). The dunk decision happens in the ball-holding sub-state: when close to rim (< `OPP_DUNK_APPROACH_DIST` 2.8m) with enough stamina, 65% chance to dunk vs shoot. `startOppDunk` gives a jump boost (velocityY = 7.5) and sets up the same multi-phase animation. `updateOppDunk` runs the phases identically to `updateDunk` but operates on the opponent's position/state. `registerMadeBasket('Dunk')` handles score attribution via `_lastShooterRef`.
+
+21. **AI sitting architecture** — Each AI player has an optional `_aiSitState` object with phases: `walking` (approach bench, stop at 1.6m), `entering` (smooth lerp to `seat.y - SIT_ROOT_OFFSET`, face seat direction, 0.3s), `seated` (recover stamina at 22/sec, leave when stamina > 85), `exiting` (stand + step forward 0.8m in seat facing direction, 0.45s). During entering/seated/exiting, empty collider arrays `[]` are passed to `updatePlayer` to prevent the bench AABB from fighting the position lerps. Ball is force-dropped before entering sitting state. Catch detection skips players with `_aiSitState`.
