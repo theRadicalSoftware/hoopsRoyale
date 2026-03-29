@@ -17,7 +17,7 @@ const MOVE_BLEND_OUT_SPEED = 10.0;
 const PLAYER_COLLIDER_RADIUS = 0.22;
 
 // ── Stun constants ──────────────────────────────────────
-const STUN_DURATION   = 1.0;     // total stun time in seconds
+const STUN_DURATION   = 1.8;     // total stun time in seconds
 const STUN_RAMP_TIME  = 0.1;     // time for flinch to reach full intensity
 const STUN_RECOIL     = 3.5;     // initial recoil speed (decays over stun)
 const PUNCH_HIT_RADIUS = 0.55;   // how close fist must be to target center to register a hit
@@ -291,6 +291,27 @@ export function createPlayer(scene, options = {}) {
     shadowDisc.position.y = PLAYER_FOOT_OFFSET + 0.01;
     root.add(shadowDisc);
 
+    // ── 3D Stamina bar (floats above head) ─────────────────
+    const STAM_BAR_W = 0.52, STAM_BAR_H = 0.055;
+    const staminaBarGroup = new THREE.Group();
+    staminaBarGroup.position.set(0, PLAYER_HEIGHT + 0.18, 0);
+
+    const barBgGeo = new THREE.PlaneGeometry(STAM_BAR_W + 0.02, STAM_BAR_H + 0.016);
+    const barBgMat = new THREE.MeshBasicMaterial({ color: 0x0a0a0a, transparent: true, opacity: 0.55, depthTest: false });
+    const barBg = new THREE.Mesh(barBgGeo, barBgMat);
+    barBg.renderOrder = 998;
+    staminaBarGroup.add(barBg);
+
+    const barFillGeo = new THREE.PlaneGeometry(STAM_BAR_W, STAM_BAR_H);
+    const barFillMat = new THREE.MeshBasicMaterial({ color: 0x44dd66, transparent: true, opacity: 0.88, depthTest: false });
+    const barFill = new THREE.Mesh(barFillGeo, barFillMat);
+    barFill.renderOrder = 999;
+    barFill.position.z = 0.001;
+    staminaBarGroup.add(barFill);
+
+    staminaBarGroup.visible = false;
+    root.add(staminaBarGroup);
+
     // Start hidden unless options say otherwise
     root.visible = startVisible;
     root.position.set(spawnPos.x, spawnPos.y ?? GROUNDED_Y, spawnPos.z);
@@ -312,6 +333,15 @@ export function createPlayer(scene, options = {}) {
         isGrounded: true,
         jumpPressed: false,
         visualGroundOffsetY: PLAYER_FOOT_OFFSET,
+        speedMultiplier: 1.0,
+        // ── Stamina ────────────────────────────────
+        stamina: 100,
+        maxStamina: 100,
+        _staminaBarGroup: staminaBarGroup,
+        _staminaBarFill: barFill,
+        _staminaBarFillMat: barFillMat,
+        _staminaBarW: STAM_BAR_W,
+        _staminaBarVisible: 0,     // opacity lerp target for fade in/out
         // ── Punch state ──────────────────────────────
         punchQueued: false,
         punchActive: false,
@@ -384,7 +414,7 @@ export function updatePlayer(pd, delta, input, movementBasis = null, colliders =
     }
 
     // Velocity-based movement removes start/stop jitter and feels smoother.
-    tmpTargetVel.copy(tmpInputDir).multiplyScalar(WALK_SPEED);
+    tmpTargetVel.copy(tmpInputDir).multiplyScalar(WALK_SPEED * (pd.speedMultiplier ?? 1));
 
     // Apply stun recoil — pushback in hit direction, decays with stun intensity
     if (isStunned) {
@@ -424,6 +454,7 @@ export function updatePlayer(pd, delta, input, movementBasis = null, colliders =
         pd.velocityY = JUMP_FORCE;
         pd.isGrounded = false;
         pd.isJumping = true;
+        pd._justJumped = true;
     }
     pd.jumpPressed = input.jump;
 
@@ -1051,6 +1082,48 @@ export function applyStun(pd, dirX, dirZ) {
     pd.punchActive = false;
     pd.punchPhase = 'none';
     pd.punchQueued = false;
+}
+
+/**
+ * Update the 3D stamina bar above a player's head.
+ * Call each frame for every visible player. Billboards toward camera.
+ */
+const _parentQuatInv = new THREE.Quaternion();
+
+export function updateStaminaBar(pd, camera) {
+    if (!pd._staminaBarGroup) return;
+    const frac = Math.max(0, Math.min(1, pd.stamina / pd.maxStamina));
+    const shouldShow = frac < 0.98;
+
+    // Fade in/out
+    const target = shouldShow ? 1 : 0;
+    pd._staminaBarVisible += (target - pd._staminaBarVisible) * 0.12;
+    if (pd._staminaBarVisible < 0.01) { pd._staminaBarGroup.visible = false; return; }
+    pd._staminaBarGroup.visible = true;
+
+    // Billboard — face camera, accounting for parent's world rotation
+    if (camera) {
+        pd.group.getWorldQuaternion(_parentQuatInv);
+        _parentQuatInv.invert();
+        pd._staminaBarGroup.quaternion.copy(_parentQuatInv).multiply(camera.quaternion);
+    }
+
+    // Scale fill bar horizontally (left-anchored)
+    const displayFrac = Math.max(0.001, frac);
+    pd._staminaBarFill.scale.x = displayFrac;
+    pd._staminaBarFill.position.x = (displayFrac - 1) * pd._staminaBarW * 0.5;
+
+    // Color: green → yellow → orange → red
+    let r, g, b;
+    if (frac > 0.55) { const t = (frac - 0.55) / 0.45; r = 0.18 + (1 - t) * 0.82; g = 0.75 + t * 0.12; b = 0.28; }
+    else if (frac > 0.25) { const t = (frac - 0.25) / 0.3; r = 0.95; g = 0.35 + t * 0.45; b = 0.15; }
+    else { r = 0.9; g = 0.18 + frac * 0.7; b = 0.12; }
+    pd._staminaBarFillMat.color.setRGB(r, g, b);
+
+    // Opacity fade
+    const barOpacity = pd._staminaBarVisible;
+    pd._staminaBarFillMat.opacity = 0.88 * barOpacity;
+    pd._staminaBarGroup.children[0].material.opacity = 0.55 * barOpacity;
 }
 
 export { PUNCH_HIT_RADIUS };

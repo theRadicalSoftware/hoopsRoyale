@@ -878,6 +878,7 @@ function getTargetRimPosition(playerData) {
  */
 export function shootBasketball(ball, playerData, launchAngleDeg, powerMultiplier = 1.0) {
     if (!ball || !ball.heldByPlayer || !playerData) return false;
+    ball._lastShooterRef = playerData;
     const shotPower = THREE.MathUtils.clamp(powerMultiplier, SHOT_POWER_MIN, SHOT_POWER_MAX);
 
     const rim = getTargetRimPosition(playerData);

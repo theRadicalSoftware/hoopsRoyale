@@ -220,6 +220,101 @@
             font-weight: 600;
         }
 
+        /* ── Opponent Score HUD ────────────────────────── */
+        #opp-score-hud {
+            position: fixed;
+            top: 44px;
+            right: 20px;
+            z-index: 115;
+            min-width: 136px;
+            padding: 10px 12px 9px;
+            border-radius: 10px;
+            border: 1px solid rgba(34, 102, 204, 0.35);
+            background: linear-gradient(160deg, rgba(15, 25, 55, 0.66), rgba(10, 16, 40, 0.6));
+            box-shadow: 0 10px 24px rgba(0,0,0,0.24), inset 0 1px 0 rgba(100,160,255,0.12);
+            backdrop-filter: blur(3px);
+            pointer-events: none;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            text-align: right;
+        }
+        #opp-score-hud .opp-score-label {
+            color: rgba(130, 175, 255, 0.68);
+            font-size: 0.58rem;
+            text-transform: uppercase;
+            letter-spacing: 0.16em;
+            font-weight: 700;
+        }
+        #opp-score-hud .opp-score-value {
+            margin-top: 2px;
+            color: rgba(130, 185, 255, 0.95);
+            font-size: 1.4rem;
+            line-height: 1;
+            letter-spacing: 0.04em;
+            font-weight: 800;
+            text-shadow: 0 0 10px rgba(34, 102, 204, 0.2);
+        }
+        #opp-score-hud .opp-score-detail {
+            margin-top: 4px;
+            color: rgba(150, 185, 240, 0.62);
+            font-size: 0.56rem;
+            text-transform: uppercase;
+            letter-spacing: 0.11em;
+            font-weight: 600;
+        }
+
+        /* ── Stamina HUD ──────────────────────────────── */
+        #stamina-hud {
+            position: fixed;
+            top: 118px;
+            left: 20px;
+            z-index: 115;
+            min-width: 136px;
+            padding: 8px 12px 9px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.16);
+            background: linear-gradient(160deg, rgba(20, 28, 50, 0.60), rgba(10, 16, 34, 0.54));
+            box-shadow: 0 8px 20px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.12);
+            backdrop-filter: blur(3px);
+            pointer-events: none;
+            transition: opacity 0.35s ease, transform 0.35s ease;
+            transform: translateY(0);
+        }
+        #stamina-hud .stamina-hud-label {
+            color: rgba(218, 228, 255, 0.62);
+            font-size: 0.52rem;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+        #stamina-hud .stamina-hud-shell {
+            position: relative;
+            width: 112px;
+            height: 10px;
+            border-radius: 5px;
+            border: 1px solid rgba(255,255,255,0.18);
+            background: linear-gradient(90deg, rgba(0,0,0,0.32), rgba(0,0,0,0.22));
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        #stamina-hud .stamina-hud-fill {
+            position: absolute;
+            top: 1px; bottom: 1px; left: 1px;
+            width: calc(100% - 2px);
+            border-radius: 4px;
+            background: linear-gradient(90deg, #44dd66, #3cd45e);
+            box-shadow: 0 0 8px rgba(68, 221, 102, 0.3);
+            transition: width 0.15s ease-out;
+            transform-origin: left center;
+        }
+        #stamina-hud .stamina-hud-value {
+            margin-top: 4px;
+            color: rgba(205, 214, 240, 0.68);
+            font-size: 0.5rem;
+            letter-spacing: 0.1em;
+            font-weight: 600;
+        }
+
         /* ── Shot Feedback ──────────────────────────────── */
         #shot-feedback {
             position: fixed;
@@ -436,6 +531,20 @@
         <div class="score-hud-label">Score</div>
         <div class="score-hud-value" id="score-hud-value">0</div>
         <div class="score-hud-detail" id="score-hud-detail">Makes 0/0</div>
+    </div>
+
+    <div id="opp-score-hud" class="hud-hidden" aria-hidden="true">
+        <div class="opp-score-label">Opponent</div>
+        <div class="opp-score-value" id="opp-score-hud-value">0</div>
+        <div class="opp-score-detail" id="opp-score-hud-detail">Makes 0/0</div>
+    </div>
+
+    <div id="stamina-hud" class="hud-hidden" aria-hidden="true">
+        <div class="stamina-hud-label">Stamina</div>
+        <div class="stamina-hud-shell">
+            <div class="stamina-hud-fill" id="stamina-hud-fill"></div>
+        </div>
+        <div class="stamina-hud-value" id="stamina-hud-value">100%</div>
     </div>
 
     <div id="ui-buttons">
