@@ -1,1 +1,4 @@
 node_modules/
+.codex
+agent.local.md
+CLAUDE.local.md

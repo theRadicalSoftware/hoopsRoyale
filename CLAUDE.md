@@ -197,7 +197,7 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 - `scoreCooldown`, `pendingMake`, `scorePrevBallValid`, `scorePrevBallPos` — scoring detection state
 - `dunkState` — multi-phase player dunk animation state (null when not dunking); opponents use `opp._dunkState` instead
 - `sitState` — seating animation state (null when not seated)
-- `sitToggleQueued` — set true on F keypress, consumed next frame
+- `sitToggleQueued` — set true on C keypress, consumed next frame
 - `sunMesh`, `moonMesh`, `moonGlowMesh` — celestial body references
 - `playerMoveBasis` — `{ forward, right }` vectors computed from camera direction each frame for camera-relative controls
 - `startOrbitElapsed`, `startOrbitCamPos` — time-driven start menu orbit animation state
@@ -233,7 +233,7 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 - During dunk: all input zeroed, player velocity/position controlled by dunk interpolation
 
 **Seating state machine** (in animate loop, player mode only):
-- F key toggles `sitToggleQueued`
+- C key toggles `sitToggleQueued`
 - If standing near seat → `startSittingOnSeat(seat)` with smoothStep enter transition
 - If sitting → `startStandingFromSeat()` with smoothStep exit transition
 - During sit: all input zeroed, player position locked to seat
@@ -744,19 +744,17 @@ Everything is in meters with Y up. Court center is at world origin (0, 0, 0).
 ## Known Issues / Technical Debt
 
 1. **Window tagging is fragile** — relies on matching exact hex color values (`0xffcc66`, `0x334455`). If materials change, tags break.
-2. **Full scene traversal during day/night** — `applyDayNightState()` traverses the entire scene tree every frame during transitions. Could be optimized with cached mesh references (like `collectAnimatedObjects` does for nets/leaves).
-3. **Sky transition** — abruptly swaps texture at `t=0.5` rather than blending. Could use shader blending.
-4. **Lamp light positions hardcoded in lighting.js** — must be manually kept in sync with lamp positions in park.js.
-5. **No boundary constraints on player** — can walk beyond the court, outside the fence (through gate openings), and into the city.
-6. **Dribble only while grounded** — ball returns to chest hold if player jumps while dribbling. No mid-air dribble or ball release.
-7. **Shooting only while stationary** — player must be standing still and grounded to enter shooting stance. No jump shots or running shots yet.
-8. **All baskets score 2 points** — no three-point detection based on shot distance. Need to check player position relative to three-point arc at time of shot.
-9. **main.js is very large** (~3270 lines) — gameplay systems (scoring, dunking, seating, stamina, power meter, teammate/opponent AI, passing, opponent dunking) could be extracted into separate modules. This is the most pressing technical debt.
-10. **No per-player colliders for teammates** — only opponents have cylinder colliders. Teammates can be walked through.
-11. **Dynamic collider array allocation** — `updateOpponentAI` creates a filtered collider array each frame per opponent. Could be optimized with a shared pre-filtered array.
-12. **Duplicate dunk code** — player dunk (`findDunkRim`/`startDunk`/`updateDunk`) and opponent dunk (`findOppDunkRim`/`startOppDunk`/`updateOppDunk`) are largely duplicated. Could be refactored into a shared generic dunk system parameterized by player data reference.
-13. **AI bench seat occupancy not tracked** — multiple AI players can target the same bench seat. Should track occupied seats to prevent overlapping.
-14. **No ball stealing mechanic** — opponents can only get the ball via pickup after it's dropped, punch-forced drop, or catching passes. No reach-in steal or interception.
+2. **Sky transition** — day/night sky still swaps at `t=0.5` rather than true texture blending. Could use shader-based blend.
+3. **Lamp light positions hardcoded in lighting.js** — must be manually kept in sync with lamp positions in park.js.
+4. **No boundary constraints on player** — can walk beyond the court, outside the fence (through gate openings), and into the city.
+5. **Dribble only while grounded** — ball returns to chest hold if player jumps while dribbling. No mid-air dribble or ball release.
+6. **Shooting only while stationary** — player must be standing still and grounded to enter shooting stance. No jump shots or running shots yet.
+7. **All baskets score 2 points** — no three-point detection based on shot distance. Need to check shooter distance relative to the three-point line at release time.
+8. **main.js is very large** (~3270 lines) — gameplay systems (scoring, dunking, seating, stamina, power meter, teammate/opponent AI, passing, opponent dunking) could be extracted into separate modules. This is the most pressing technical debt.
+9. **No per-player colliders for teammates** — only opponents have cylinder colliders. Teammates can be walked through.
+10. **Dynamic collider array allocation** — `updateOpponentAI` creates a filtered collider array each frame per opponent. Could be optimized with a shared pre-filtered array.
+11. **Duplicate dunk code** — player dunk (`findDunkRim`/`startDunk`/`updateDunk`) and opponent dunk (`findOppDunkRim`/`startOppDunk`/`updateOppDunk`) are largely duplicated. Could be refactored into a shared generic dunk system parameterized by player data reference.
+12. **No ball stealing mechanic** — opponents can only get the ball via pickup after it's dropped, punch-forced drop, or catching passes. No reach-in steal or interception.
 
 ---
 
