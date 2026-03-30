@@ -1,43 +1,59 @@
 # Hoops Royale
 
-A street basketball game built in Three.js. No frameworks, no bundlers, no image assets — just raw JavaScript and procedural everything.
+A street basketball game built in Three.js. No frameworks, no bundlers, no image assets. Everything is procedural and runs directly in the browser with native ES modules.
 
 ---
 
 **The court is cracked. The nets are chain. The city never sleeps.**
 
-Hoops Royale drops you into a gritty NYC pickup court surrounded by park fences, graffiti-tagged asphalt, and a skyline that shifts from golden hour to midnight. Every texture — from the worn leather on the ball to the pebbled concrete under your feet — is drawn in code at runtime.
+Hoops Royale drops you into a gritty NYC pickup court surrounded by fences, graffiti-tagged asphalt, benches, bleachers, and a living skyline that shifts from day to night.
 
 ---
 
-## What's Here
+## Current Gameplay State
 
-- A full-scale NBA regulation court with faded paint, scuff marks, and hand-tagged street art
-- Chain-link fencing with gate openings, Bishop's Crook lamp posts, bleachers, benches, trees
-- A procedurally generated NYC block — brownstones, water towers, parked cars, fire hydrants, traffic lights
-- A jointed player character with walk, jump, idle, and ball-carry animations
-- A basketball with leather texture, realistic bounce physics, rolling, and a sleep system
-- Ball pickup, chest hold, and speed-triggered dribbling with a phased animation cycle
-- Dribble collision release — run the ball into a bench and it bounces away
-- Day/night cycle with sun, moon, stars, lamp post illumination, and glowing city windows
-- Three camera modes: orbit, free roam, and third-person drop-in
+- Full NBA-scale court + park + city environment
+- Player movement and animation: walk, jump, idle, dribble, shoot, dunk, punch, sit
+- Ball physics: pickup, dribble cycle, bounce/roll/sleep, torus rim collision, projectile shooting, passing
+- Team gameplay:
+  - Up to 3 teammates (red) and 3 opponents (blue)
+  - Opponent AI: pursue, pass, shoot, dunk, chase, punch, bench recovery
+  - Teammate AI: wander, evade pressure, pass support
+- Scoring system:
+  - Player team and opponent team scores
+  - Makes/attempts tracking for both sides
+  - Shot feedback popup
+- Stamina system for all players:
+  - Action drains and idle/bench recovery
+  - User stamina HUD + 3D stamina bars for AI
+- Day/night transition with lamp/window lighting response
+- Three camera modes: Orbit, Free Roam, Drop In
 
-## What's Not Here (Yet)
+## Not Implemented Yet
 
-Scoring. Opponents. Sound. The game is at the shooting stage — you can walk, jump, pick up the ball, dribble, enter a shooting stance, aim, and launch the ball toward the hoop with realistic arc physics. The next milestone is detecting when the ball goes through the rim and tracking score.
+- Three-point scoring detection (all made baskets currently award 2)
+- Teammate colliders (teammates can still be walked through)
+- Teammate shooting AI
+- Reach-in/steal mechanic
+- Audio (bounce, swish, impact, ambience)
+- Game mode/rules layer (1v1, 3v3, possession rules, win conditions)
 
 ---
 
 ## Run It
 
 ```bash
-# Any static file server. Pick one:
+# Any static file server:
 python3 -m http.server 8080
+# or
 npx serve .
+# or
 npx http-server .
 ```
 
-Open `http://localhost:8080`. That's it — no install, no build step, no dependencies.
+Open `http://localhost:8080`.
+
+No build step, no runtime dependencies, no install required.
 
 ## Controls
 
@@ -53,45 +69,46 @@ Open `http://localhost:8080`. That's it — no install, no build step, no depend
 | | Escape | Release mouse |
 | **Drop In** | WASD / Arrows | Walk (camera-relative) |
 | | Space | Jump |
-| | Z | Pick up ball |
-| | X | Enter shooting stance (hold ball) / Shoot (in stance) |
-| | W / S (in stance) | Adjust shot arc angle up / down |
-| | A / D (in stance) | Rotate player left / right |
-| | C | Cancel shooting stance |
+| | Z | Pick up ball / pass (if holding ball with teammates present) |
+| | X | Enter shooting stance / shoot (in stance) / dunk (airborne near rim) |
+| | W / S (in stance) | Adjust shot angle |
+| | A / D (in stance) | Turn/aim |
+| | C | Sit/stand (normal play) or cancel active shoot/pass stance |
+| | V | Punch |
 | | Click + drag | Orbit camera around player |
 | | Scroll | Zoom |
 
-Use the buttons in the top-right corner to switch modes, drop a ball, toggle fence panels, or flip between day and night.
+Top-right buttons: camera mode switch, ball drop, add teammate, add opponent, panel toggle, day/night toggle.
 
 ---
 
 ## Tech
 
-Three.js v0.162.0 loaded via CDN import map. Vanilla ES modules. Zero build tools. Every texture is procedurally generated on HTML canvas elements at runtime — there are no image files in this repository.
+Three.js v0.162.0 via CDN import map. Vanilla ES modules. Every texture is generated at runtime with canvas; there are no image assets in this repo.
 
 ```
 js/
-├── main.js       — Scene, camera, controls, day/night, shooting state machine, animation loop
-├── court.js      — Court surface, lines, paint, graffiti
-├── hoops.js      — Poles, backboards, rims, chain nets, colliders
-├── park.js       — Fencing, lamps, trees, benches, bleachers, paths, colliders
-├── city.js       — Buildings, streets, sidewalks, cars, props
-├── lighting.js   — Sun, moon, ambient, hemisphere, fill, rim, lamppost lights
-├── player.js     — Player model, joint animation, movement physics, collision
-└── ball.js       — Basketball physics, dribbling, pickup, shooting, collision, state machine
+├── main.js       — Scene setup, gameplay state machines, AI, stamina, scoring, animation loop
+├── court.js      — Court surface, paint, lines, graffiti
+├── hoops.js      — Hoops, backboards, rims, chain nets, hoop colliders
+├── park.js       — Fence, lamps, trees, benches, bleachers, park colliders, seat anchors
+├── city.js       — Streets, buildings, props
+├── lighting.js   — Day/night light rig and lamp lights
+├── player.js     — Player rig, movement, animation, collisions, punch/stun, stamina bar
+└── ball.js       — Ball physics, dribble/hold/shoot/pass, rim collision, catches, forced drops
 ```
 
-See [CLAUDE.md](CLAUDE.md) for the full technical reference — architecture, constants, collision system, coordinate map, known issues, and roadmap.
+See [CLAUDE.md](CLAUDE.md) for the detailed technical guide and roadmap.
 
 ---
 
 ## Roadmap
 
-**Now:** Shooting works. Pick up the ball, enter stance with X, aim with W/S/A/D, and shoot with X. Ball follows a realistic arc toward the hoop.
+**Now:** Competitive pickup gameplay is live (teams, scoring, stamina, opponent AI, passing, dunking).
 
-**Next:** Scoring detection — track when the ball goes through the rim, display points.
+**Next:** Three-point scoring, teammate colliders, teammate shooting AI, steal mechanic, sound.
 
-**Later:** AI opponents, game modes (1v1, 3v3, H-O-R-S-E), sound design, court progression, player customization, multiplayer.
+**Later:** Mode/rules systems, smarter team tactics, player progression/customization, multiplayer.
 
 ---
 
