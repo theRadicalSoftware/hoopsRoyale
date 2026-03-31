@@ -23,20 +23,23 @@ Keep additions in line with the current tone:
 
 ---
 
-## Current Stage Snapshot (March 29, 2026)
+## Current Stage Snapshot (March 31, 2026)
 The game is already in a competitive team-play phase:
 - Player movement/combat/interaction: walk, jump, dribble, shoot, dunk, pass, punch, sit
-- Team systems: teammates + opponents with AI behaviors
-- Scoring: player team and opponent team points + makes/attempts HUD
+- Team systems: teammates + opponents with full competitive AI behaviors
+- Scoring: player team and opponent team points + makes/attempts HUD + three-point detection
 - Stamina: drains by actions, recovers idle/seated, affects speed
+- Collision: teammate/opponent body colliders prevent walk-through across all teams
+- Awareness UX: floating ball beacon + 2K-style under-foot radar arc/arrow
+- Stamina UX: under-foot thin yellow stamina arc (legacy overhead bar deprecated)
 - Day/night transition, start menu, and three camera modes
 
 Key missing gameplay pieces:
-1. Three-point detection (all made baskets currently score 2)
-2. Teammate physical colliders
-3. Teammate shooting AI
-4. Ball stealing/reach-in mechanic
-5. Audio
+1. Ball stealing/reach-in mechanic
+2. Audio pass (bounce/swish/impact/ambient)
+3. Rules + mode layer (possession/win conditions/structured modes)
+4. AI tactical polish (team defense, smarter off-ball decisions)
+5. `main.js` decomposition into modules
 
 Default priority: complete immediate gameplay gaps before medium/long-term polish, unless the user requests otherwise.
 
@@ -45,17 +48,17 @@ Default priority: complete immediate gameplay gaps before medium/long-term polis
 ## Product Evolution Plan
 
 ### Immediate Priorities
-1. Three-point scoring logic
-2. Teammate colliders
-3. Teammate offensive AI (shooting decisions + execution)
-4. Steal mechanic
-5. Core sound pass
+1. Steal mechanic
+2. Core sound pass
+3. Rules/modes layer
+4. Tactical AI polish
+5. `main.js` decomposition
 
 ### Medium-Term
-1. Game modes/rules (1v1, 3v3, possession/win conditions)
-2. Shot type expansion (jumpers/layups/runners)
-3. Smarter team defense/offense behavior
-4. `main.js` decomposition into focused modules
+1. Shot type expansion (jumpers/layups/runners)
+2. Defensive/offensive playbook behavior
+3. UI/indicator polish pass and options (size/opacity toggles)
+4. Performance pass on per-frame allocations
 
 ### Long-Term
 1. Court progression and career loop
@@ -83,7 +86,7 @@ Do not introduce architecture that fights the current zero-build setup.
 
 ### Player Motion / Rig / Punch / Stun / Collision
 - `js/player.js`
-- Use for: animation pose changes, movement physics, stun behavior, punch geometry timing, 3D stamina bar visuals
+- Use for: animation pose changes, movement physics, stun behavior, punch geometry timing, under-foot stamina arc visuals
 
 ### Ball Physics / Hold States / Shooting / Passing
 - `js/ball.js`
