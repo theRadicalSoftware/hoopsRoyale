@@ -15,6 +15,9 @@ const TURN_SPEED    = 10;
 const MOVE_BLEND_IN_SPEED = 14.0;
 const MOVE_BLEND_OUT_SPEED = 10.0;
 const PLAYER_COLLIDER_RADIUS = 0.22;
+const STAMINA_ARC_RADIUS = 0.49;
+const STAMINA_ARC_SWEEP = Math.PI * 1.10;
+const STAMINA_ARC_SEGMENTS = 72;
 
 // ── Stun constants ──────────────────────────────────────
 const STUN_DURATION   = 1.8;     // total stun time in seconds
@@ -29,6 +32,17 @@ const tmpInputDir = new THREE.Vector3();
 const tmpTargetVel = new THREE.Vector3();
 const WORLD_FORWARD = new THREE.Vector3(0, 0, -1);
 const WORLD_RIGHT = new THREE.Vector3(1, 0, 0);
+
+function createStaminaArcPoints(radius, sweep, segments) {
+    const pts = [];
+    const start = -sweep * 0.5;
+    for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const a = start + t * sweep;
+        pts.push(new THREE.Vector3(Math.sin(a) * radius, 0, Math.cos(a) * radius));
+    }
+    return pts;
+}
 
 // ─── Create Player ─────────────────────────────────────────
 export function createPlayer(scene, options = {}) {
@@ -312,6 +326,38 @@ export function createPlayer(scene, options = {}) {
     staminaBarGroup.visible = false;
     root.add(staminaBarGroup);
 
+    // ── Under-foot stamina arc (2K-style thin inner arc) ─────────
+    const staminaArcGroup = new THREE.Group();
+    staminaArcGroup.position.set(0, PLAYER_FOOT_OFFSET + 0.028, 0);
+
+    const arcPoints = createStaminaArcPoints(STAMINA_ARC_RADIUS, STAMINA_ARC_SWEEP, STAMINA_ARC_SEGMENTS);
+    const arcTrackGeo = new THREE.BufferGeometry().setFromPoints(arcPoints);
+    const arcTrackMat = new THREE.LineBasicMaterial({
+        color: 0x2f2808,
+        transparent: true,
+        opacity: 0,
+        depthTest: false,
+        depthWrite: false
+    });
+    const arcTrack = new THREE.Line(arcTrackGeo, arcTrackMat);
+    arcTrack.renderOrder = 993;
+    staminaArcGroup.add(arcTrack);
+
+    const arcFillGeo = new THREE.BufferGeometry().setFromPoints(arcPoints);
+    const arcFillMat = new THREE.LineBasicMaterial({
+        color: 0xf6d651,
+        transparent: true,
+        opacity: 0,
+        depthTest: false,
+        depthWrite: false
+    });
+    const arcFill = new THREE.Line(arcFillGeo, arcFillMat);
+    arcFill.renderOrder = 994;
+    staminaArcGroup.add(arcFill);
+
+    staminaArcGroup.visible = false;
+    root.add(staminaArcGroup);
+
     // Start hidden unless options say otherwise
     root.visible = startVisible;
     root.position.set(spawnPos.x, spawnPos.y ?? GROUNDED_Y, spawnPos.z);
@@ -326,6 +372,7 @@ export function createPlayer(scene, options = {}) {
         moveBlend: 0,
         idleClock: 0,
         facingAngle: spawnAngle,
+        jerseyColor,
         isTeammate: !!options.isTeammate,
         velocity: new THREE.Vector3(),
         velocityY: 0,
@@ -342,6 +389,11 @@ export function createPlayer(scene, options = {}) {
         _staminaBarFillMat: barFillMat,
         _staminaBarW: STAM_BAR_W,
         _staminaBarVisible: 0,     // opacity lerp target for fade in/out
+        _staminaArcGroup: staminaArcGroup,
+        _staminaArcFill: arcFill,
+        _staminaArcFillMat: arcFillMat,
+        _staminaArcTrackMat: arcTrackMat,
+        _staminaArcPointCount: STAMINA_ARC_SEGMENTS + 1,
         // ── Punch state ──────────────────────────────
         punchQueued: false,
         punchActive: false,
@@ -371,6 +423,7 @@ export function updatePlayer(pd, delta, input, movementBasis = null, colliders =
         pd.jumpPressed = false;
         group.rotation.y = pd.facingAngle;
         animateLimbs(pd, false, delta, carryState);
+        syncDynamicPlayerCollider(pd);
         return;
     }
 
@@ -470,6 +523,7 @@ export function updatePlayer(pd, delta, input, movementBasis = null, colliders =
     }
 
     resolvePlayerCollisions(pd, colliders);
+    syncDynamicPlayerCollider(pd);
 
     // ── Punch state machine ──────────────────────────────
     updatePunchState(pd, delta, carryState);
@@ -479,6 +533,21 @@ export function updatePlayer(pd, delta, input, movementBasis = null, colliders =
 }
 
 const PLAYER_BROADPHASE_PAD = 0.5;
+
+function syncDynamicPlayerCollider(pd) {
+    const collider = pd?._collider;
+    if (!collider) return;
+    const pos = pd.group.position;
+    const groundY = pos.y + (pd.visualGroundOffsetY || PLAYER_FOOT_OFFSET);
+    collider.x = pos.x;
+    collider.z = pos.z;
+    collider.yMin = groundY;
+    collider.yMax = groundY + PLAYER_HEIGHT;
+    // Invalidate broadphase cache after movement.
+    collider._pbpX = undefined;
+    collider._pbpZ = undefined;
+    collider._pbpR = undefined;
+}
 
 function ensurePlayerBroadphase(c) {
     if (c._pbpR !== undefined) return;
@@ -1085,45 +1154,31 @@ export function applyStun(pd, dirX, dirZ) {
 }
 
 /**
- * Update the 3D stamina bar above a player's head.
- * Call each frame for every visible player. Billboards toward camera.
+ * Update the under-foot stamina arc for a player.
+ * Kept as updateStaminaBar() for call-site compatibility.
  */
-const _parentQuatInv = new THREE.Quaternion();
-
-export function updateStaminaBar(pd, camera) {
-    if (!pd._staminaBarGroup) return;
+export function updateStaminaBar(pd, _camera) {
+    if (!pd._staminaArcGroup || !pd._staminaArcFill) return;
     const frac = Math.max(0, Math.min(1, pd.stamina / pd.maxStamina));
     const shouldShow = frac < 0.98;
 
     // Fade in/out
     const target = shouldShow ? 1 : 0;
     pd._staminaBarVisible += (target - pd._staminaBarVisible) * 0.12;
-    if (pd._staminaBarVisible < 0.01) { pd._staminaBarGroup.visible = false; return; }
-    pd._staminaBarGroup.visible = true;
+    if (pd._staminaBarGroup) pd._staminaBarGroup.visible = false; // hide legacy head bar
+    if (pd._staminaBarVisible < 0.01) { pd._staminaArcGroup.visible = false; return; }
+    pd._staminaArcGroup.visible = true;
 
-    // Billboard — face camera, accounting for parent's world rotation
-    if (camera) {
-        pd.group.getWorldQuaternion(_parentQuatInv);
-        _parentQuatInv.invert();
-        pd._staminaBarGroup.quaternion.copy(_parentQuatInv).multiply(camera.quaternion);
-    }
+    // Draw-range controls arc length (thin arc fill)
+    const pointCount = pd._staminaArcPointCount || 2;
+    const visiblePoints = Math.max(2, Math.floor((pointCount - 1) * frac) + 1);
+    pd._staminaArcFill.geometry.setDrawRange(0, visiblePoints);
 
-    // Scale fill bar horizontally (left-anchored)
-    const displayFrac = Math.max(0.001, frac);
-    pd._staminaBarFill.scale.x = displayFrac;
-    pd._staminaBarFill.position.x = (displayFrac - 1) * pd._staminaBarW * 0.5;
-
-    // Color: green → yellow → orange → red
-    let r, g, b;
-    if (frac > 0.55) { const t = (frac - 0.55) / 0.45; r = 0.18 + (1 - t) * 0.82; g = 0.75 + t * 0.12; b = 0.28; }
-    else if (frac > 0.25) { const t = (frac - 0.25) / 0.3; r = 0.95; g = 0.35 + t * 0.45; b = 0.15; }
-    else { r = 0.9; g = 0.18 + frac * 0.7; b = 0.12; }
-    pd._staminaBarFillMat.color.setRGB(r, g, b);
-
-    // Opacity fade
+    // Eloquent stamina yellow
     const barOpacity = pd._staminaBarVisible;
-    pd._staminaBarFillMat.opacity = 0.88 * barOpacity;
-    pd._staminaBarGroup.children[0].material.opacity = 0.55 * barOpacity;
+    pd._staminaArcFillMat.color.setHex(0xf6d651);
+    pd._staminaArcFillMat.opacity = 0.84 * barOpacity;
+    pd._staminaArcTrackMat.opacity = 0.26 * barOpacity;
 }
 
 export { PUNCH_HIT_RADIUS };

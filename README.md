@@ -18,22 +18,24 @@ Hoops Royale drops you into a gritty NYC pickup court surrounded by fences, graf
 - Team gameplay:
   - Up to 3 teammates (red) and 3 opponents (blue)
   - Opponent AI: pursue, pass, shoot, dunk, chase, punch, bench recovery
-  - Teammate AI: wander, evade pressure, pass support
+  - Teammate AI: pursue, pass, shoot, dunk, chase, punch, bench recovery
+  - Team and opponent colliders: players no longer walk through teammates or opponents
 - Scoring system:
   - Player team and opponent team scores
+  - Three-point detection from release distance (7.24m arc radius)
   - Makes/attempts tracking for both sides
   - Shot feedback popup
 - Stamina system for all players:
   - Action drains and idle/bench recovery
-  - User stamina HUD + 3D stamina bars for AI
+  - User stamina HUD + under-foot thin stamina arcs for all players
+- Ball awareness indicators:
+  - Red floating beacon directly over live ball
+  - 2K-style under-foot radar arc + arrow pointing toward ball
 - Day/night transition with lamp/window lighting response
 - Three camera modes: Orbit, Free Roam, Drop In
 
 ## Not Implemented Yet
 
-- Three-point scoring detection (all made baskets currently award 2)
-- Teammate colliders (teammates can still be walked through)
-- Teammate shooting AI
 - Reach-in/steal mechanic
 - Audio (bounce, swish, impact, ambience)
 - Game mode/rules layer (1v1, 3v3, possession rules, win conditions)
@@ -88,13 +90,13 @@ Three.js v0.162.0 via CDN import map. Vanilla ES modules. Every texture is gener
 
 ```
 js/
-├── main.js       — Scene setup, gameplay state machines, AI, stamina, scoring, animation loop
+├── main.js       — Scene setup, gameplay state machines, AI, indicators, scoring, animation loop
 ├── court.js      — Court surface, paint, lines, graffiti
 ├── hoops.js      — Hoops, backboards, rims, chain nets, hoop colliders
 ├── park.js       — Fence, lamps, trees, benches, bleachers, park colliders, seat anchors
 ├── city.js       — Streets, buildings, props
 ├── lighting.js   — Day/night light rig and lamp lights
-├── player.js     — Player rig, movement, animation, collisions, punch/stun, stamina bar
+├── player.js     — Player rig, movement, animation, collisions, punch/stun, under-foot stamina arc
 └── ball.js       — Ball physics, dribble/hold/shoot/pass, rim collision, catches, forced drops
 ```
 
@@ -104,9 +106,9 @@ See [CLAUDE.md](CLAUDE.md) for the detailed technical guide and roadmap.
 
 ## Roadmap
 
-**Now:** Competitive pickup gameplay is live (teams, scoring, stamina, opponent AI, passing, dunking).
+**Now:** Competitive pickup gameplay is live (teams, three-point scoring, stamina, teammate+opponent AI, passing, dunking, indicators).
 
-**Next:** Three-point scoring, teammate colliders, teammate shooting AI, steal mechanic, sound.
+**Next:** Steal mechanic, sound, rules/modes, and AI polish/refactor.
 
 **Later:** Mode/rules systems, smarter team tactics, player progression/customization, multiplayer.
 

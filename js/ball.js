@@ -888,6 +888,9 @@ export function shootBasketball(ball, playerData, launchAngleDeg, powerMultiplie
     const px = playerData.group.position.x;
     const pz = playerData.group.position.z;
 
+    // Track shooter distance from rim at release time (for three-point detection)
+    ball._lastShotReleaseDistToRim = Math.hypot(px - rim.x, pz - rim.z);
+
     // Use player facing direction for the shot, not raw aim at rim
     const facing = playerData.facingAngle || 0;
     const fwdX = Math.sin(facing);
