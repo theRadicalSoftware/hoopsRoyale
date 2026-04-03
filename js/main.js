@@ -160,6 +160,7 @@ const TM_DUNK_APPROACH_DIST = 2.8;
 const TM_DUNK_CHANCE = 0.65;
 const TM_PICKUP_RADIUS = 0.65;
 const TM_PUNCH_CHANCE = 0.012;
+const TEAM_AI_BASE_SPEED = 0.82;
 
 // ─── Opponent System ─────────────────────────────────────
 const opponents = [];
@@ -167,6 +168,43 @@ const MAX_OPPONENTS = 3;
 const OPPONENT_JERSEY_COLOR = 0x2266cc;
 const OPPONENT_NUMBERS = [3, 7, 24];
 const OPPONENT_COLLIDER_RADIUS = 0.44;
+const OPP_AI_BASE_SPEED = 0.82;
+
+// ─── Basic Coverage (man + help) ─────────────────────────
+const DEF_ONBALL_STOP_DIST = 1.15;
+const DEF_OFFBALL_GAP = 1.3;
+const DEF_HELP_X_CLAMP = 4.6;
+const DEF_HELP_BLEND = 0.58;
+const DEF_MARK_STICK_RADIUS = 0.7;
+
+// ─── Solo Tip-Off System ────────────────────────────────
+const REFEREE_SKIN_COLOR = 0x8e6848;
+const REFEREE_SHOE_COLOR = 0x1d1d1d;
+const REF_BASE_SPEED = 0.74;
+const COUNTDOWN_DURATION = 3;
+const TIPOFF_SETUP_DURATION = 3.75;
+const TIPOFF_THROW_SPEED_Y = 8.1;
+const TIPOFF_THROW_LATERAL = 0.34;
+const TIPOFF_MAX_CONTEST_TIME = 6.5;
+const TIPOFF_OPP_JUMP_MIN_BALL_HEIGHT = 1.95;
+const TIPOFF_OPP_PICKUP_RADIUS = 0.82;
+const TIPOFF_OPP_REACTION_DELAY = 0.48;
+const TIPOFF_OPP_CONTEST_SPEED = 0.72;
+
+const SOLO_TIPOFF_LAYOUT = {
+    player: { x: -0.58, z: 0.85, facing: Math.PI },
+    contestOpponent: { x: 0.58, z: -0.85, facing: 0 },
+    referee: { x: 0, z: -0.4, facing: Math.PI * 0.5 },
+    refereeExit: { x: -11.0, z: 0, facing: Math.PI * 0.5 },
+    teammates: [
+        { x: -3.8, z: 3.4, facing: Math.PI },
+        { x: 3.8, z: 3.4, facing: Math.PI }
+    ],
+    opponents: [
+        { x: -3.8, z: -3.4, facing: 0 },
+        { x: 3.8, z: -3.4, facing: 0 }
+    ]
+};
 
 // ─── Shooting Power Meter ────────────────────────────────
 const POWER_METER_MIN_MULT = 0.55;
@@ -248,6 +286,7 @@ let playerColliders = [];
 let rimSensors = [];
 const playerInput = { forward: false, backward: false, left: false, right: false, jump: false };
 const shootInput = { aimUp: false, aimDown: false, turnLeft: false, turnRight: false };
+let blockHeld = false;
 
 // ─── Zero-allocation input reset helpers ────────────────────
 function resetPlayerInput() { playerInput.forward = playerInput.backward = playerInput.left = playerInput.right = playerInput.jump = false; }
@@ -263,7 +302,7 @@ const cachedMoonChildren = [];  // { mesh, type: 'crater'|'halo'|'glow' }
 const cachedSunChildren = [];   // child meshes of sun
 
 // ─── Persistent carryState (avoids per-frame object allocation) ──
-const _carryState = { holding: false, shooting: false, dribbling: false, dribblePhase: 0, dunking: false, hanging: false, seated: false, seatSettled: false };
+const _carryState = { holding: false, shooting: false, dribbling: false, dribblePhase: 0, dunking: false, hanging: false, seated: false, seatSettled: false, blocking: false };
 
 const freeRoamForward = new THREE.Vector3();
 const freeRoamRight = new THREE.Vector3();
@@ -284,7 +323,14 @@ const playerMoveBasis = { forward: playerMoveForward, right: playerMoveRight };
 let smoothedDelta = 1 / 60;
 let stabilizedElapsed = 0;
 let gameStarted = false;
+let matchLive = false;
 let startMenuActive = false;
+let gameMode = null; // 'solo' | 'freeplay'
+let refereeData = null;
+let tipOffState = null;
+let countdownValue = 0;
+let countdownTimer = 0;
+const tipOffIdleInput = { forward: false, backward: false, left: false, right: false, jump: false };
 const START_ORBIT_SPEED = 0.09;
 const startOrbitCenter = new THREE.Vector3(0, 1.15, 0);
 let startOrbitRadius = 34;
@@ -294,7 +340,7 @@ let startOrbitBaseAngle = 0;   // angle at the moment the menu opened
 let startOrbitElapsed = 0;     // time since menu opened (drives orbit)
 const startOrbitCamPos = new THREE.Vector3();  // smoothed camera position
 
-const startMenu = document.getElementById('start-menu');
+const modeSelect = document.getElementById('mode-select');
 const uiOverlay = document.getElementById('ui-overlay');
 const uiButtons = document.getElementById('ui-buttons');
 const controlsHint = document.getElementById('controls-hint');
@@ -313,19 +359,49 @@ const oppScoreHudDetail = document.getElementById('opp-score-hud-detail');
 const staminaHud = document.getElementById('stamina-hud');
 const staminaHudFill = document.getElementById('stamina-hud-fill');
 const staminaHudValue = document.getElementById('stamina-hud-value');
+const countdownOverlay = document.getElementById('countdown-overlay');
+const countdownNumber = document.getElementById('countdown-number');
+const soloScoreboard = document.getElementById('solo-scoreboard');
+const sbHomeScore = document.getElementById('sb-home-score');
+const sbHomeDetail = document.getElementById('sb-home-detail');
+const sbAwayScore = document.getElementById('sb-away-score');
+const sbAwayDetail = document.getElementById('sb-away-detail');
+const controlsBar = document.getElementById('controls-bar');
 let _prevStaminaFrac = -1;
 let shotFeedbackHideTimeout = null;
 
 function setGameplayHudVisible(visible) {
     const method = visible ? 'remove' : 'add';
+    const isSolo = gameMode === 'solo';
+    const isFree = gameMode === 'freeplay';
+
     uiOverlay?.classList[method]('hud-hidden');
-    uiButtons?.classList[method]('hud-hidden');
-    controlsHint?.classList[method]('hud-hidden');
-    scoreHud?.classList[method]('hud-hidden');
     shotFeedback?.classList[method]('hud-hidden');
     powerMeter?.classList[method]('hud-hidden');
     staminaHud?.classList[method]('hud-hidden');
-    oppScoreHud?.classList[method]('hud-hidden');
+
+    // Solo: centered scoreboard + styled controls bar, no debug buttons or old score panels
+    if (isSolo) {
+        uiButtons?.classList.add('hud-hidden');
+        scoreHud?.classList.add('hud-hidden');
+        oppScoreHud?.classList.add('hud-hidden');
+        controlsHint?.classList.add('hud-hidden');
+        if (soloScoreboard) soloScoreboard.style.display = visible ? 'flex' : 'none';
+        if (controlsBar) controlsBar.style.opacity = visible ? '1' : '0';
+    } else if (isFree) {
+        // Free play: debug buttons, old score panels, old controls hint
+        uiButtons?.classList[method]('hud-hidden');
+        scoreHud?.classList[method]('hud-hidden');
+        oppScoreHud?.classList[method]('hud-hidden');
+        controlsHint?.classList[method]('hud-hidden');
+        if (soloScoreboard) soloScoreboard.style.display = 'none';
+        if (controlsBar) controlsBar.style.opacity = '0';
+    } else {
+        uiButtons?.classList[method]('hud-hidden');
+        controlsHint?.classList[method]('hud-hidden');
+        scoreHud?.classList[method]('hud-hidden');
+        oppScoreHud?.classList[method]('hud-hidden');
+    }
 
     if (!visible && shotFeedback) {
         shotFeedback.classList.remove('show');
@@ -364,35 +440,495 @@ function updateStartMenuCamera(delta) {
     camera.lookAt(startOrbitCenter);
 }
 
-function showStartMenu() {
+function showModeSelect() {
     startMenuActive = true;
     gameStarted = false;
+    matchLive = false;
+    gameMode = null;
+    blockHeld = false;
+    tipOffState = null;
+    if (refereeData?.group) refereeData.group.visible = false;
     if (isPointerLocked) document.exitPointerLock();
     controls.enabled = false;
     setupStartMenuOrbit();
     setGameplayHudVisible(false);
+    if (soloScoreboard) soloScoreboard.style.display = 'none';
+    if (controlsBar) controlsBar.style.opacity = '0';
+    if (countdownOverlay) countdownOverlay.style.display = 'none';
 
-    if (startMenu) {
-        startMenu.style.display = 'flex';
-        startMenu.classList.remove('fade-out');
-        startMenu.classList.add('active');
-        startMenu.setAttribute('aria-hidden', 'false');
+    if (modeSelect) {
+        modeSelect.style.display = 'flex';
+        modeSelect.classList.remove('fade-out');
     }
 }
 
-function startGame() {
-    if (!startMenuActive) return;
+function isSoloTipOffActive() {
+    return !!tipOffState && gameStarted && !matchLive;
+}
 
+function setEntityPose(entity, pose) {
+    if (!entity?.group || !pose) return;
+    const groundedY = -(entity.visualGroundOffsetY || 0.265);
+    entity.group.position.set(pose.x, groundedY, pose.z);
+    entity.facingAngle = pose.facing;
+    entity.group.rotation.y = pose.facing;
+}
+
+function resetEntityStateForTipOff(entity) {
+    if (!entity) return;
+    entity.velocity.set(0, 0, 0);
+    entity.velocityY = 0;
+    entity.isGrounded = true;
+    entity.isJumping = false;
+    entity.jumpPressed = false;
+    entity.stunTimer = 0;
+    entity.punchQueued = false;
+    entity.punchActive = false;
+    entity.punchPhase = 'none';
+    entity.punchElapsed = 0;
+    entity._dunkState = null;
+    entity._shootPrep = false;
+    entity._shootTimer = 0;
+    entity._holdTimer = 0;
+    entity._driveTarget = null;
+    entity._positionTarget = null;
+    entity._wanderTarget = null;
+    entity._wanderPause = 0;
+    entity._wanderDist = 0;
+    entity._aiSitState = null;
+    entity._pickupAssistActive = false;
+    entity.blocking = false;
+}
+
+function createRefStripedMaterial() {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 64;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(0, 0, 64, 64);
+    ctx.fillStyle = '#1a1a1a';
+    const stripeW = 8;
+    for (let x = 0; x < 64; x += stripeW * 2) {
+        ctx.fillRect(x, 0, stripeW, 64);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.78, metalness: 0.0 });
+}
+
+function ensureReferee() {
+    if (refereeData?.group) {
+        refereeData.group.visible = true;
+        return refereeData;
+    }
+    refereeData = createPlayer(scene, {
+        jerseyColor: 0x888888,
+        skinColor: REFEREE_SKIN_COLOR,
+        shoeColor: REFEREE_SHOE_COLOR,
+        spawnPosition: { x: SOLO_TIPOFF_LAYOUT.referee.x, y: undefined, z: SOLO_TIPOFF_LAYOUT.referee.z },
+        facingAngle: SOLO_TIPOFF_LAYOUT.referee.facing,
+        name: 'referee',
+        visible: true
+    });
+    refereeData.baseSpeedMultiplier = REF_BASE_SPEED;
+    refereeData.speedMultiplier = REF_BASE_SPEED;
+    // Apply striped material to jersey meshes (upperTorso + lowerTorso)
+    const stripeMat = createRefStripedMaterial();
+    refereeData.group.traverse((child) => {
+        if (child.isMesh && child.material?.color) {
+            const hex = child.material.color.getHex();
+            if (hex === 0x888888) child.material = stripeMat;
+        }
+    });
+    // Remove the headband (refs don't wear headbands)
+    const headband = refereeData.group.children.find(c => c.geometry?.type === 'TorusGeometry');
+    if (headband) headband.visible = false;
+    refereeData.group.visible = true;
+    return refereeData;
+}
+
+function positionBallForTipOffHold() {
+    if (!basketballData || !refereeData?.group?.visible) return;
+    const refPos = refereeData.group.position;
+    const refGroundY = refPos.y + (refereeData.visualGroundOffsetY || 0.265);
+    const facing = refereeData.facingAngle || 0;
+
+    basketballData.mesh.visible = true;
+    basketballData.active = false;
+    basketballData.heldByPlayer = false;
+    basketballData.heldByPlayerData = null;
+    basketballData.dribblingByPlayer = false;
+    basketballData._shootingStance = false;
+    basketballData._passingStance = false;
+    basketballData._dunkControl = false;
+    basketballData._ignoreRimTimer = 0;
+    basketballData._ignorePlayerTimer = 0;
+    basketballData._ignorePlayerRef = null;
+    basketballData._backspin = null;
+    basketballData._lastShooterRef = null;
+    basketballData._lastShotReleaseDistToRim = 0;
+    basketballData.velocity.set(0, 0, 0);
+    basketballData.sleeping = false;
+    basketballData.grounded = false;
+    basketballData.idleFrames = 0;
+    basketballData.mesh.position.set(
+        refPos.x + Math.sin(facing) * 0.18,
+        refGroundY + 1.26,
+        refPos.z + Math.cos(facing) * 0.18
+    );
+    basketballData.prevPosition.copy(basketballData.mesh.position);
+}
+
+function beginTipOffToss() {
+    if (!tipOffState || !basketballData || !refereeData?.group?.visible) return;
+    const refPos = refereeData.group.position;
+    const refGroundY = refPos.y + (refereeData.visualGroundOffsetY || 0.265);
+
+    basketballData.mesh.visible = true;
+    basketballData.active = true;
+    basketballData.heldByPlayer = false;
+    basketballData.heldByPlayerData = null;
+    basketballData.dribblingByPlayer = false;
+    basketballData._shootingStance = false;
+    basketballData._passingStance = false;
+    basketballData._dunkControl = false;
+    basketballData._ignoreRimTimer = 0;
+    basketballData._ignorePlayerTimer = 0;
+    basketballData._ignorePlayerRef = null;
+    basketballData.sleeping = false;
+    basketballData.grounded = false;
+    basketballData.idleFrames = 0;
+    basketballData.mesh.position.set(refPos.x, refGroundY + 1.55, refPos.z);
+    basketballData.prevPosition.copy(basketballData.mesh.position);
+    basketballData.velocity.set(
+        (Math.random() - 0.5) * TIPOFF_THROW_LATERAL,
+        TIPOFF_THROW_SPEED_Y,
+        (Math.random() - 0.5) * TIPOFF_THROW_LATERAL
+    );
+
+    tipOffState.phase = 'contest';
+    tipOffState.phaseElapsed = 0;
+}
+
+function finalizeTipOff(holder = null) {
+    matchLive = true;
+    tipOffState = null;
+
+    // Referee stays visible and walks to the sideline
+    if (refereeData?.group) {
+        refereeData._sidelineState = {
+            phase: 'walking',       // walking → idle
+            target: { ...SOLO_TIPOFF_LAYOUT.refereeExit },
+            idleFacing: SOLO_TIPOFF_LAYOUT.refereeExit.facing
+        };
+    }
+
+    updateModeUI();
+
+    if (holder) {
+        const allyControl = holder === playerData || !!holder.isTeammate;
+        showShotFeedback('Tip-Off Won', allyControl ? 'Your side controls the ball' : 'Opponents control possession');
+    } else {
+        showShotFeedback('Ball Live', 'Play on');
+    }
+}
+
+/** Update referee walking to sideline and idling there after tip-off ends. */
+function updateRefereeSideline(delta) {
+    if (!refereeData?.group?.visible || !refereeData._sidelineState) return;
+    const state = refereeData._sidelineState;
+    const pos = refereeData.group.position;
+
+    if (state.phase === 'walking') {
+        const dx = state.target.x - pos.x;
+        const dz = state.target.z - pos.z;
+        const dist = Math.hypot(dx, dz);
+
+        if (dist < 0.3) {
+            // Arrived at sideline — stop and face the court
+            state.phase = 'idle';
+            refereeData.velocity.set(0, 0, 0);
+            refereeData.facingAngle = state.idleFacing;
+            refereeData.group.rotation.y = state.idleFacing;
+            return;
+        }
+
+        // Walk toward sideline target
+        const input = { forward: false, backward: false, left: false, right: false, jump: false };
+        if (dz < -0.15) input.forward = true;
+        if (dz > 0.15) input.backward = true;
+        if (dx < -0.15) input.left = true;
+        if (dx > 0.15) input.right = true;
+
+        // Face the walk direction
+        const walkAngle = Math.atan2(dx, dz);
+        let angleDiff = walkAngle - (refereeData.facingAngle || 0);
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        refereeData.facingAngle += angleDiff * (1 - Math.exp(-8 * delta));
+        refereeData.group.rotation.y = refereeData.facingAngle;
+
+        updatePlayer(refereeData, delta, input, null, [], null);
+    } else {
+        // Idle at sideline — just stand there, subtle breathing handled by updatePlayer
+        const input = { forward: false, backward: false, left: false, right: false, jump: false };
+        updatePlayer(refereeData, delta, input, null, [], null);
+    }
+}
+
+function setupSoloTipOff() {
+    if (!playerData || !basketballData) return;
+
+    const contestOpponent = opponents[0] || null;
+    if (!contestOpponent) {
+        matchLive = true;
+        tipOffState = null;
+        dropBasketballAtCenter(basketballData);
+        return;
+    }
+
+    const ref = ensureReferee();
+    matchLive = false;
+
+    setEntityPose(playerData, SOLO_TIPOFF_LAYOUT.player);
+    setEntityPose(contestOpponent, SOLO_TIPOFF_LAYOUT.contestOpponent);
+    setEntityPose(ref, SOLO_TIPOFF_LAYOUT.referee);
+
+    for (let i = 0; i < teammates.length; i++) {
+        const tmPose = SOLO_TIPOFF_LAYOUT.teammates[i] || { x: -4 + i * 2.1, z: 2.6, facing: Math.PI };
+        setEntityPose(teammates[i], tmPose);
+    }
+    for (let i = 1; i < opponents.length; i++) {
+        const oppPose = SOLO_TIPOFF_LAYOUT.opponents[i - 1] || { x: -4 + i * 2.0, z: -2.8, facing: 0 };
+        setEntityPose(opponents[i], oppPose);
+    }
+
+    resetEntityStateForTipOff(playerData);
+    for (const tm of teammates) resetEntityStateForTipOff(tm);
+    for (const opp of opponents) resetEntityStateForTipOff(opp);
+    resetEntityStateForTipOff(ref);
+
+    dunkState = null;
+    sitState = null;
+    shootingStance = false;
+    passingStance = false;
+    passTargetTeammate = null;
+    pickupAssistTimer = 0;
+    pickupQueued = false;
+    passQueued = false;
+    shootQueued = false;
+    cancelShootQueued = false;
+    sitToggleQueued = false;
+    resetShootInput();
+    resetPlayerInput();
+    resetPowerMeterCycle();
+
+    tipOffState = {
+        phase: 'setup',
+        phaseElapsed: 0,
+        contestOpponent,
+        playerMark: SOLO_TIPOFF_LAYOUT.player,
+        contestMark: SOLO_TIPOFF_LAYOUT.contestOpponent,
+        teammateMarks: teammates.map((_, i) => SOLO_TIPOFF_LAYOUT.teammates[i] || { x: -4 + i * 2.1, z: 2.6, facing: Math.PI }),
+        opponentMarks: opponents.map((_, i) => {
+            if (i === 0) return SOLO_TIPOFF_LAYOUT.contestOpponent;
+            return SOLO_TIPOFF_LAYOUT.opponents[i - 1] || { x: -4 + i * 2.0, z: -2.8, facing: 0 };
+        }),
+        refereeMark: SOLO_TIPOFF_LAYOUT.referee,
+        refereeExitMark: SOLO_TIPOFF_LAYOUT.refereeExit
+    };
+
+    positionBallForTipOffHold();
+    updateModeUI();
+}
+
+function updateTipOffStationaryEntity(entity, delta, mark) {
+    if (!entity?.group?.visible || !mark) return;
+    const input = { forward: false, backward: false, left: false, right: false, jump: false };
+    const pos = entity.group.position;
+    const dx = mark.x - pos.x;
+    const dz = mark.z - pos.z;
+
+    if (Math.abs(dz) > 0.09) input[dz < 0 ? 'forward' : 'backward'] = true;
+    if (Math.abs(dx) > 0.09) input[dx < 0 ? 'left' : 'right'] = true;
+
+    const turnLerp = 1 - Math.exp(-8 * delta);
+    entity.facingAngle = lerpAngle(entity.facingAngle || mark.facing, mark.facing, turnLerp);
+    entity.group.rotation.y = entity.facingAngle;
+
+    const filtered = entity._collider ? playerColliders.filter(c => c !== entity._collider) : [];
+    updatePlayer(entity, delta, input, null, filtered, null);
+}
+
+function updateTipOffContestOpponent(delta) {
+    if (!tipOffState?.contestOpponent?.group?.visible) return;
+    const opp = tipOffState.contestOpponent;
+
+    if (tipOffState.phase === 'setup') {
+        updateTipOffStationaryEntity(opp, delta, tipOffState.contestMark);
+        return;
+    }
+
+    const input = { forward: false, backward: false, left: false, right: false, jump: false };
+    const ballPos = basketballData?.mesh?.position;
+    const oppPos = opp.group.position;
+    const contestElapsed = tipOffState.phaseElapsed;
+    const canReact = contestElapsed >= TIPOFF_OPP_REACTION_DELAY;
+
+    if (ballPos && basketballData?.active && !basketballData.heldByPlayer) {
+        const dx = ballPos.x - oppPos.x;
+        const dz = ballPos.z - oppPos.z;
+        const dist = Math.hypot(dx, dz);
+
+        if (canReact && dist > 0.48) {
+            if (dz < -0.24) input.forward = true;
+            if (dz > 0.24) input.backward = true;
+            if (dx < -0.24) input.left = true;
+            if (dx > 0.24) input.right = true;
+        }
+
+        if (dist > 0.02) {
+            const face = Math.atan2(dx, dz);
+            const turnLerp = 1 - Math.exp(-12 * delta);
+            opp.facingAngle = lerpAngle(opp.facingAngle || face, face, turnLerp);
+            opp.group.rotation.y = opp.facingAngle;
+        }
+
+        const oppGroundY = oppPos.y + (opp.visualGroundOffsetY || 0.265);
+        const ballRelY = ballPos.y - oppGroundY;
+        if (
+            canReact &&
+            opp.isGrounded &&
+            ballRelY > TIPOFF_OPP_JUMP_MIN_BALL_HEIGHT &&
+            dist < 1.2 &&
+            basketballData.velocity.y < 2.2
+        ) {
+            input.jump = true;
+        }
+
+        if (canReact && dist < TIPOFF_OPP_PICKUP_RADIUS) {
+            if (tryTeammateCatch(basketballData, opp) || tryPickUpBasketball(basketballData, opp)) {
+                opp._holdSeed = Math.random();
+            }
+        }
+    }
+
+    const filtered = opp._collider ? playerColliders.filter(c => c !== opp._collider) : [];
+    const prevSpeed = opp.speedMultiplier;
+    const base = opp.baseSpeedMultiplier ?? OPP_AI_BASE_SPEED;
+    opp.speedMultiplier = base * TIPOFF_OPP_CONTEST_SPEED;
+    updatePlayer(opp, delta, input, null, filtered, null);
+    opp.speedMultiplier = prevSpeed;
+}
+
+function updateTipOffReferee(delta) {
+    if (!refereeData?.group?.visible || !tipOffState) return;
+    const targetMark = tipOffState.phase === 'setup' ? tipOffState.refereeMark : tipOffState.refereeExitMark;
+    updateTipOffStationaryEntity(refereeData, delta, targetMark);
+}
+
+function showCountdown(num) {
+    if (!countdownOverlay || !countdownNumber) return;
+    countdownOverlay.style.display = 'flex';
+    countdownNumber.textContent = num === 0 ? 'GO' : String(num);
+    countdownNumber.classList.toggle('go', num === 0);
+    countdownNumber.classList.remove('pop');
+    void countdownNumber.offsetWidth; // force reflow
+    countdownNumber.classList.add('pop');
+}
+
+function hideCountdown() {
+    if (!countdownOverlay || !countdownNumber) return;
+    countdownNumber.classList.remove('pop');
+    setTimeout(() => {
+        if (countdownOverlay) countdownOverlay.style.display = 'none';
+    }, 350);
+}
+
+function updateTipOffState(delta) {
+    if (!isSoloTipOffActive() || !tipOffState) return;
+    tipOffState.phaseElapsed += delta;
+
+    if (tipOffState.phase === 'setup') {
+        positionBallForTipOffHold();
+        // Drive countdown: show 3, 2, 1 during setup, then GO + toss
+        const elapsed = tipOffState.phaseElapsed;
+        const countdownStart = TIPOFF_SETUP_DURATION - COUNTDOWN_DURATION - 0.35;
+        const timeInCountdown = elapsed - countdownStart;
+        if (timeInCountdown >= 0) {
+            const newVal = COUNTDOWN_DURATION - Math.floor(timeInCountdown);
+            if (newVal !== countdownValue && newVal >= 1 && newVal <= COUNTDOWN_DURATION) {
+                countdownValue = newVal;
+                showCountdown(newVal);
+            }
+        }
+        if (elapsed >= TIPOFF_SETUP_DURATION) {
+            countdownValue = 0;
+            showCountdown(0);
+            setTimeout(() => hideCountdown(), 600);
+            beginTipOffToss();
+        }
+        return;
+    }
+
+    if (tipOffState.phase !== 'contest') return;
+
+    if (basketballData?.heldByPlayer && basketballData.heldByPlayerData) {
+        finalizeTipOff(basketballData.heldByPlayerData);
+        return;
+    }
+
+    if (tipOffState.phaseElapsed >= TIPOFF_MAX_CONTEST_TIME) {
+        finalizeTipOff(null);
+    }
+}
+
+function startSoloGame() {
+    if (!startMenuActive) return;
     startMenuActive = false;
     gameStarted = true;
+    matchLive = false;
+    gameMode = 'solo';
+    blockHeld = false;
+    countdownValue = COUNTDOWN_DURATION + 1;
 
-    if (startMenu) {
-        startMenu.classList.remove('active');
-        startMenu.classList.add('fade-out');
-        startMenu.setAttribute('aria-hidden', 'true');
+    // Fade out mode select overlay
+    if (modeSelect) {
+        modeSelect.classList.add('fade-out');
         setTimeout(() => {
-            if (!startMenuActive && startMenu) startMenu.style.display = 'none';
-        }, 560);
+            if (modeSelect) modeSelect.style.display = 'none';
+        }, 650);
+    }
+
+    // Spawn 3v3 teams
+    for (let i = 0; i < 2; i++) addTeammate();
+    for (let i = 0; i < 3; i++) addOpponent();
+
+    // Build pre-game jump ball sequence
+    setupSoloTipOff();
+
+    // Switch to player camera and show HUD (slight delay masks camera transition)
+    setTimeout(() => {
+        switchCameraMode('player');
+        setGameplayHudVisible(true);
+    }, 180);
+}
+
+function startFreePlay() {
+    if (!startMenuActive) return;
+    startMenuActive = false;
+    gameStarted = true;
+    matchLive = true;
+    gameMode = 'freeplay';
+    blockHeld = false;
+
+    // Fade out mode select overlay
+    if (modeSelect) {
+        modeSelect.classList.add('fade-out');
+        setTimeout(() => {
+            if (modeSelect) modeSelect.style.display = 'none';
+        }, 650);
     }
 
     setGameplayHudVisible(true);
@@ -411,6 +947,10 @@ function toggleDayNight() {
 
 function dropBall() {
     if (!basketballData) return;
+    if (isSoloTipOffActive()) {
+        showShotFeedback('Jump Ball', 'Tip-off is in progress');
+        return;
+    }
     dunkState = null;
     pickupAssistTimer = 0;
     basketballData._dunkControl = false;
@@ -510,6 +1050,11 @@ function updateScoreHud() {
     if (scoreHudDetail) scoreHudDetail.textContent = `Makes ${shotsMade}/${shotsAttempted}`;
     if (oppScoreHudValue) oppScoreHudValue.textContent = String(oppTotalScore);
     if (oppScoreHudDetail) oppScoreHudDetail.textContent = `Makes ${oppShotsMade}/${oppShotsAttempted}`;
+    // Solo scoreboard
+    if (sbHomeScore) sbHomeScore.textContent = String(totalScore);
+    if (sbHomeDetail) sbHomeDetail.textContent = `${shotsMade}/${shotsAttempted}`;
+    if (sbAwayScore) sbAwayScore.textContent = String(oppTotalScore);
+    if (sbAwayDetail) sbAwayDetail.textContent = `${oppShotsMade}/${oppShotsAttempted}`;
 }
 
 function showShotFeedback(mainText, subText) {
@@ -637,7 +1182,7 @@ function updateScoringSystem(delta) {
 }
 
 function updatePickupAssist(delta) {
-    if (!playerData || !basketballData || basketballData.heldByPlayer || dunkState) {
+    if (!playerData || !basketballData || basketballData.heldByPlayer || dunkState || blockHeld || playerData.blocking) {
         pickupAssistTimer = Math.max(0, pickupAssistTimer - delta);
         if (playerData) playerData._pickupAssistActive = false;
         pickupQueued = false;
@@ -826,6 +1371,8 @@ function addOpponent() {
         visible: true
     });
     opp.group.visible = true;
+    opp.baseSpeedMultiplier = OPP_AI_BASE_SPEED;
+    opp.speedMultiplier = OPP_AI_BASE_SPEED;
 
     // Add a cylinder collider for this opponent so the player can't walk through them
     const oppPos = opp.group.position;
@@ -874,6 +1421,7 @@ const STAMINA_PUNCH_COST    = 10;
 const STAMINA_SHOOT_COST    = 15;
 const STAMINA_PASS_COST     = 6;
 const STAMINA_DUNK_COST     = 18;
+const STAMINA_BLOCK_DRAIN   = 7.2;     // per second while holding block
 const STAMINA_RUN_DRAIN     = 3.0;     // per second while moving
 const STAMINA_JUMP_COST     = 7;
 const STAMINA_IDLE_REGEN    = 1.5;     // per second while standing
@@ -913,11 +1461,12 @@ function updateStaminaForPlayer(pd, delta, isSitting) {
         }
     }
     // Speed penalty when low
+    const baseSpeedMult = pd.baseSpeedMultiplier ?? 1.0;
     if (pd.stamina < STAMINA_LOW_THRESH) {
         const t = pd.stamina / STAMINA_LOW_THRESH; // 0→1
-        pd.speedMultiplier = STAMINA_SPEED_PENALTY + (1 - STAMINA_SPEED_PENALTY) * t;
+        pd.speedMultiplier = baseSpeedMult * (STAMINA_SPEED_PENALTY + (1 - STAMINA_SPEED_PENALTY) * t);
     } else {
-        pd.speedMultiplier = 1.0;
+        pd.speedMultiplier = baseSpeedMult;
     }
 }
 
@@ -1070,6 +1619,125 @@ function updateAISitting(pd, delta) {
     }
 }
 
+function getActiveBallPlayers(players) {
+    return players.filter((p) => p?.group?.visible && p.stunTimer <= 0 && !p._aiSitState);
+}
+
+function findClosestPlayerToPoint(players, x, z) {
+    let best = null;
+    let bestDist = Infinity;
+    for (const p of players) {
+        if (!p?.group?.visible || p.stunTimer > 0 || p._aiSitState) continue;
+        const dx = p.group.position.x - x;
+        const dz = p.group.position.z - z;
+        const d = dx * dx + dz * dz;
+        if (d < bestDist) {
+            bestDist = d;
+            best = p;
+        }
+    }
+    return best;
+}
+
+function findClosestOnBallDefender(defenders, holder) {
+    if (!holder?.group?.visible) return null;
+    let best = null;
+    let bestDist = Infinity;
+    const hx = holder.group.position.x;
+    const hz = holder.group.position.z;
+    for (const d of defenders) {
+        if (!d?.group?.visible || d.stunTimer > 0 || d._aiSitState) continue;
+        const dx = d.group.position.x - hx;
+        const dz = d.group.position.z - hz;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < bestDist) {
+            bestDist = distSq;
+            best = d;
+        }
+    }
+    return best;
+}
+
+function getDefensiveMarkForPlayer(defender, defenders, offense, holder, defendRimZ) {
+    if (!defender?.group?.visible || !holder?.group?.visible) return null;
+    const activeDefenders = getActiveBallPlayers(defenders);
+    if (!activeDefenders.length) return null;
+
+    const onBall = findClosestOnBallDefender(activeDefenders, holder);
+    if (onBall === defender) {
+        return { role: 'onball', target: holder };
+    }
+
+    const offBallDefenders = activeDefenders
+        .filter((d) => d !== onBall)
+        .sort((a, b) => a.group.position.x - b.group.position.x);
+    const offBallTargets = offense
+        .filter((p) => p?.group?.visible && p.stunTimer <= 0 && !p._aiSitState && p !== holder)
+        .sort((a, b) => a.group.position.x - b.group.position.x);
+
+    const assignment = new Map();
+    const used = new Set();
+
+    for (const def of offBallDefenders) {
+        let best = null;
+        let bestDist = Infinity;
+        for (const tgt of offBallTargets) {
+            if (used.has(tgt)) continue;
+            const dx = def.group.position.x - tgt.group.position.x;
+            const dz = def.group.position.z - tgt.group.position.z;
+            const distSq = dx * dx + dz * dz;
+            if (distSq < bestDist) {
+                bestDist = distSq;
+                best = tgt;
+            }
+        }
+        if (best) {
+            used.add(best);
+            assignment.set(def, best);
+        } else {
+            assignment.set(def, holder);
+        }
+    }
+
+    const assigned = assignment.get(defender) || holder;
+    const aPos = assigned.group.position;
+    const toRimX = -aPos.x;
+    const toRimZ = defendRimZ - aPos.z;
+    const len = Math.hypot(toRimX, toRimZ) || 1;
+    const gap = assigned === holder ? 0.92 : DEF_OFFBALL_GAP;
+    const markX = aPos.x + (toRimX / len) * gap;
+    const markZ = aPos.z + (toRimZ / len) * gap;
+
+    if (assigned === holder) {
+        // Help position when no unique off-ball assignment is available.
+        const hx = holder.group.position.x;
+        const hz = holder.group.position.z;
+        return {
+            role: 'help',
+            markX: THREE.MathUtils.clamp(hx * DEF_HELP_BLEND, -DEF_HELP_X_CLAMP, DEF_HELP_X_CLAMP),
+            markZ: defendRimZ + (hz - defendRimZ) * DEF_HELP_BLEND,
+            assigned
+        };
+    }
+
+    return { role: 'deny', markX, markZ, assigned };
+}
+
+function steerInputTowardPoint(aiInput, fromPos, tx, tz, deadZone = DEF_MARK_STICK_RADIUS) {
+    const dx = tx - fromPos.x;
+    const dz = tz - fromPos.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist <= deadZone) return dist;
+
+    const xTol = deadZone * 0.7;
+    const zTol = deadZone * 0.7;
+    if (dz < -zTol) aiInput.forward = true;
+    if (dz > zTol) aiInput.backward = true;
+    if (dx < -xTol) aiInput.left = true;
+    if (dx > xTol) aiInput.right = true;
+    return dist;
+}
+
 function updateOpponentAI(opp, delta) {
     const oppPos = opp.group.position;
     const tmInput = { forward: false, backward: false, left: false, right: false, jump: false };
@@ -1137,6 +1805,7 @@ function updateOpponentAI(opp, delta) {
 
     // Target rim: opponents attack the rim at positive Z
     const OPP_TARGET_RIM_Z = 12.73;
+    const OPP_DEFEND_RIM_Z = -12.73;
     const OPP_SHOOT_RANGE_MIN = 1.8;
     const OPP_SHOOT_RANGE_MAX = 9.0;
     const OPP_SHOOT_WINDUP = 0.45;
@@ -1289,16 +1958,28 @@ function updateOpponentAI(opp, delta) {
         const dx = bx - oppPos.x;
         const dz = bz - oppPos.z;
         const dist = Math.hypot(dx, dz);
+        const primaryChaser = findClosestPlayerToPoint(opponents, bx, bz);
 
-        if (dist > OPP_PICKUP_RADIUS) {
-            if (dz < -0.3) tmInput.forward = true;
-            if (dz > 0.3) tmInput.backward = true;
-            if (dx < -0.3) tmInput.left = true;
-            if (dx > 0.3) tmInput.right = true;
+        if (primaryChaser !== opp) {
+            const offense = getActiveBallPlayers([playerData, ...teammates]);
+            const pseudoHolder = findClosestPlayerToPoint(offense, bx, bz) || offense[0] || null;
+            if (pseudoHolder) {
+                const mark = getDefensiveMarkForPlayer(opp, opponents, offense, pseudoHolder, OPP_DEFEND_RIM_Z);
+                if (mark && mark.role !== 'onball') {
+                    steerInputTowardPoint(tmInput, oppPos, mark.markX, mark.markZ, DEF_MARK_STICK_RADIUS);
+                }
+            }
         } else {
-            const picked = tryPickUpBasketball(basketballData, opp);
-            if (picked) {
-                opp._holdSeed = Math.random();
+            if (dist > OPP_PICKUP_RADIUS) {
+                if (dz < -0.3) tmInput.forward = true;
+                if (dz > 0.3) tmInput.backward = true;
+                if (dx < -0.3) tmInput.left = true;
+                if (dx > 0.3) tmInput.right = true;
+            } else {
+                const picked = tryPickUpBasketball(basketballData, opp);
+                if (picked) {
+                    opp._holdSeed = Math.random();
+                }
             }
         }
 
@@ -1339,23 +2020,31 @@ function updateOpponentAI(opp, delta) {
             const toHolderDx = holder.group.position.x - oppPos.x;
             const toHolderDz = holder.group.position.z - oppPos.z;
             const toHolderDist = Math.hypot(toHolderDx, toHolderDz);
+            const offense = getActiveBallPlayers([playerData, ...teammates]);
+            const mark = getDefensiveMarkForPlayer(opp, opponents, offense, holder, OPP_DEFEND_RIM_Z);
 
-            if (toHolderDist < 3.0) {
-                if (toHolderDist > 1.1) {
-                    if (toHolderDz < -0.4) tmInput.forward = true;
-                    if (toHolderDz > 0.4) tmInput.backward = true;
-                    if (toHolderDx < -0.4) tmInput.left = true;
-                    if (toHolderDx > 0.4) tmInput.right = true;
+            if (mark?.role === 'onball') {
+                if (toHolderDist > DEF_ONBALL_STOP_DIST) {
+                    if (toHolderDz < -0.35) tmInput.forward = true;
+                    if (toHolderDz > 0.35) tmInput.backward = true;
+                    if (toHolderDx < -0.35) tmInput.left = true;
+                    if (toHolderDx > 0.35) tmInput.right = true;
                 }
-                if (toHolderDist < 1.4 && Math.random() < OPP_PUNCH_CHANCE && opp.stamina >= STAMINA_EXHAUSTED) {
+
+                if (
+                    toHolderDist < 1.25 &&
+                    Math.random() < OPP_PUNCH_CHANCE * 0.75 &&
+                    opp.stamina >= STAMINA_EXHAUSTED &&
+                    !holder.blocking
+                ) {
                     opp.punchQueued = true;
                     drainStamina(opp, STAMINA_PUNCH_COST);
                 }
-            } else if (toHolderDist < 10.0) {
-                if (toHolderDz < -0.5) tmInput.forward = true;
-                if (toHolderDz > 0.5) tmInput.backward = true;
-                if (toHolderDx < -0.5) tmInput.left = true;
-                if (toHolderDx > 0.5) tmInput.right = true;
+            } else if (mark) {
+                steerInputTowardPoint(tmInput, oppPos, mark.markX, mark.markZ, DEF_MARK_STICK_RADIUS);
+                const face = Math.atan2(holder.group.position.x - oppPos.x, holder.group.position.z - oppPos.z);
+                opp.facingAngle = lerpAngle(opp.facingAngle || face, face, 1 - Math.exp(-8 * delta));
+                opp.group.rotation.y = opp.facingAngle;
             } else {
                 doOpponentWander(opp, delta, tmInput);
             }
@@ -1451,6 +2140,7 @@ function updatePunchCollisions() {
             if (target === attacker) continue;
             if (!target.group.visible) continue;
             if (target.stunTimer > 0) continue; // already stunned
+            if (target.blocking) continue; // blocking negates punch hits
 
             const tPos = target.group.position;
             const tGroundY = tPos.y + (target.visualGroundOffsetY || 0);
@@ -1513,6 +2203,8 @@ function addTeammate() {
         visible: true
     });
     tm.group.visible = true;
+    tm.baseSpeedMultiplier = TEAM_AI_BASE_SPEED;
+    tm.speedMultiplier = TEAM_AI_BASE_SPEED;
 
     // Add a cylinder collider so nobody walks through teammates
     const tmPos = tm.group.position;
@@ -1586,24 +2278,61 @@ function getTeammateChestY(tm) {
     return tm.group.position.y + (tm.visualGroundOffsetY || 0) + 1.18;
 }
 
-/** Find the best open ally (other teammate or player) to pass to. */
+/** Find the best open ally (other teammate or player) to pass to.
+ *  Scores by receiver openness, rim proximity, and pass-lane clearance. */
 function findOpenTeammateForPass(fromTm) {
     let best = null;
     let bestScore = -Infinity;
+    const fromPos = fromTm.group.position;
 
-    for (const other of teammates) {
-        if (other === fromTm || !other.group.visible || other.stunTimer > 0 || other._aiSitState) continue;
-        const otherPos = other.group.position;
+    // Determine how pressured the passer is — if swarmed, accept less-open targets
+    let passerNearbyCount = 0;
+    for (const opp of opponents) {
+        if (!opp.group.visible || opp.stunTimer > 0) continue;
+        if (Math.hypot(opp.group.position.x - fromPos.x, opp.group.position.z - fromPos.z) < 3.5) passerNearbyCount++;
+    }
+    // Lower the minimum openness threshold when passer is swarmed
+    const minOpenness = passerNearbyCount >= 2 ? 1.2 : 2.0;
+
+    function scoreTarget(targetPos) {
         let nearestEnemyDist = Infinity;
         for (const opp of opponents) {
             if (!opp.group.visible) continue;
-            const d = Math.hypot(opp.group.position.x - otherPos.x, opp.group.position.z - otherPos.z);
+            const d = Math.hypot(opp.group.position.x - targetPos.x, opp.group.position.z - targetPos.z);
             if (d < nearestEnemyDist) nearestEnemyDist = d;
         }
+        if (nearestEnemyDist < minOpenness) return null;
+
         const openness = Math.min(nearestEnemyDist, 8);
-        const rimProximity = Math.max(0, 20 - Math.hypot(otherPos.x, otherPos.z - TM_TARGET_RIM_Z));
-        const score = openness * 2 + rimProximity;
-        if (nearestEnemyDist > 2.0 && score > bestScore) {
+        const rimProximity = Math.max(0, 20 - Math.hypot(targetPos.x, targetPos.z - TM_TARGET_RIM_Z));
+
+        // Penalize if an opponent is standing in the pass lane
+        const passDx = targetPos.x - fromPos.x;
+        const passDz = targetPos.z - fromPos.z;
+        const passDist = Math.hypot(passDx, passDz);
+        let lanePenalty = 0;
+        if (passDist > 0.5) {
+            const invD = 1 / passDist;
+            const laneUx = passDx * invD;
+            const laneUz = passDz * invD;
+            for (const opp of opponents) {
+                if (!opp.group.visible) continue;
+                const ox = opp.group.position.x - fromPos.x;
+                const oz = opp.group.position.z - fromPos.z;
+                const proj = ox * laneUx + oz * laneUz;
+                if (proj < 0.5 || proj > passDist - 0.5) continue;  // not between passer and target
+                const perpDist = Math.abs(ox * laneUz - oz * laneUx);
+                if (perpDist < 1.2) lanePenalty += (1.2 - perpDist) * 3;  // closer to lane = bigger penalty
+            }
+        }
+
+        return openness * 2 + rimProximity - lanePenalty;
+    }
+
+    for (const other of teammates) {
+        if (other === fromTm || !other.group.visible || other.stunTimer > 0 || other._aiSitState) continue;
+        const score = scoreTarget(other.group.position);
+        if (score !== null && score > bestScore) {
             bestScore = score;
             best = other;
         }
@@ -1611,17 +2340,8 @@ function findOpenTeammateForPass(fromTm) {
 
     // Also consider the player as a pass target
     if (playerData?.group?.visible && playerData.stunTimer <= 0 && !sitState) {
-        const pPos = playerData.group.position;
-        let nearestEnemyDist = Infinity;
-        for (const opp of opponents) {
-            if (!opp.group.visible) continue;
-            const d = Math.hypot(opp.group.position.x - pPos.x, opp.group.position.z - pPos.z);
-            if (d < nearestEnemyDist) nearestEnemyDist = d;
-        }
-        const openness = Math.min(nearestEnemyDist, 8);
-        const rimProximity = Math.max(0, 20 - Math.hypot(pPos.x, pPos.z - TM_TARGET_RIM_Z));
-        const score = openness * 2 + rimProximity;
-        if (nearestEnemyDist > 2.0 && score > bestScore) {
+        const score = scoreTarget(playerData.group.position);
+        if (score !== null && score > bestScore) {
             bestScore = score;
             best = playerData;
         }
@@ -1661,6 +2381,7 @@ function updateTeammateAI(tm, delta) {
     const tmPos = tm.group.position;
     const tmInput = { forward: false, backward: false, left: false, right: false, jump: false };
     const filteredColliders = playerColliders.filter(c => c !== tm._collider);
+    const TM_DEFEND_RIM_Z = 12.73;
 
     // ── Active dunk — run dunk animation, skip normal AI ──
     if (tm._dunkState) {
@@ -1733,17 +2454,22 @@ function updateTeammateAI(tm, delta) {
         const distToRim = Math.hypot(tmPos.x, tmPos.z - TM_TARGET_RIM_Z);
         const inShootRange = distToRim > TM_SHOOT_RANGE_MIN && distToRim < TM_SHOOT_RANGE_MAX;
 
-        // Check if pressured by enemies (opponents)
+        // Check if pressured by enemies (opponents) — count nearby threats
         let nearestEnemyDist = Infinity;
+        let nearbyEnemyCount = 0;
         for (const opp of opponents) {
             if (!opp.group.visible || opp.stunTimer > 0) continue;
             const d = Math.hypot(opp.group.position.x - tmPos.x, opp.group.position.z - tmPos.z);
             if (d < nearestEnemyDist) nearestEnemyDist = d;
+            if (d < 3.5) nearbyEnemyCount++;
         }
         const pressured = nearestEnemyDist < 2.5;
+        const swarmed = nearbyEnemyCount >= 2;  // multiple defenders closing in
 
-        // Pass to open ally when pressured or held too long
-        if ((pressured && tm._holdTimer > 0.3) || tm._holdTimer > 4.0) {
+        // Pass to open ally when pressured/swarmed or held too long
+        // Swarmed teammates pass much faster — they're about to lose the ball
+        const passHoldThreshold = swarmed ? 0.12 : 0.3;
+        if ((pressured && tm._holdTimer > passHoldThreshold) || (swarmed && tm._holdTimer > 0.08) || tm._holdTimer > 4.0) {
             const passTarget = findOpenTeammateForPass(tm);
             if (passTarget) {
                 const tgtPos = passTarget.group.position;
@@ -1851,16 +2577,28 @@ function updateTeammateAI(tm, delta) {
         const dx = bx - tmPos.x;
         const dz = bz - tmPos.z;
         const dist = Math.hypot(dx, dz);
+        const primaryChaser = findClosestPlayerToPoint(teammates, bx, bz);
 
-        if (dist > TM_PICKUP_RADIUS) {
-            if (dz < -0.3) tmInput.forward = true;
-            if (dz > 0.3) tmInput.backward = true;
-            if (dx < -0.3) tmInput.left = true;
-            if (dx > 0.3) tmInput.right = true;
+        if (primaryChaser !== tm) {
+            const offense = getActiveBallPlayers(opponents);
+            const pseudoHolder = findClosestPlayerToPoint(offense, bx, bz) || offense[0] || null;
+            if (pseudoHolder) {
+                const mark = getDefensiveMarkForPlayer(tm, teammates, offense, pseudoHolder, TM_DEFEND_RIM_Z);
+                if (mark && mark.role !== 'onball') {
+                    steerInputTowardPoint(tmInput, tmPos, mark.markX, mark.markZ, DEF_MARK_STICK_RADIUS);
+                }
+            }
         } else {
-            const picked = tryPickUpBasketball(basketballData, tm);
-            if (picked) {
-                tm._holdSeed = Math.random();
+            if (dist > TM_PICKUP_RADIUS) {
+                if (dz < -0.3) tmInput.forward = true;
+                if (dz > 0.3) tmInput.backward = true;
+                if (dx < -0.3) tmInput.left = true;
+                if (dx > 0.3) tmInput.right = true;
+            } else {
+                const picked = tryPickUpBasketball(basketballData, tm);
+                if (picked) {
+                    tm._holdSeed = Math.random();
+                }
             }
         }
 
@@ -1900,23 +2638,30 @@ function updateTeammateAI(tm, delta) {
             const toHolderDx = holder.group.position.x - tmPos.x;
             const toHolderDz = holder.group.position.z - tmPos.z;
             const toHolderDist = Math.hypot(toHolderDx, toHolderDz);
+            const offense = getActiveBallPlayers(opponents);
+            const mark = getDefensiveMarkForPlayer(tm, teammates, offense, holder, TM_DEFEND_RIM_Z);
 
-            if (toHolderDist < 3.0) {
-                if (toHolderDist > 1.1) {
-                    if (toHolderDz < -0.4) tmInput.forward = true;
-                    if (toHolderDz > 0.4) tmInput.backward = true;
-                    if (toHolderDx < -0.4) tmInput.left = true;
-                    if (toHolderDx > 0.4) tmInput.right = true;
+            if (mark?.role === 'onball') {
+                if (toHolderDist > DEF_ONBALL_STOP_DIST) {
+                    if (toHolderDz < -0.35) tmInput.forward = true;
+                    if (toHolderDz > 0.35) tmInput.backward = true;
+                    if (toHolderDx < -0.35) tmInput.left = true;
+                    if (toHolderDx > 0.35) tmInput.right = true;
                 }
-                if (toHolderDist < 1.4 && Math.random() < TM_PUNCH_CHANCE && tm.stamina >= STAMINA_EXHAUSTED) {
+                if (
+                    toHolderDist < 1.25 &&
+                    Math.random() < TM_PUNCH_CHANCE * 0.75 &&
+                    tm.stamina >= STAMINA_EXHAUSTED &&
+                    !holder.blocking
+                ) {
                     tm.punchQueued = true;
                     drainStamina(tm, STAMINA_PUNCH_COST);
                 }
-            } else if (toHolderDist < 10.0) {
-                if (toHolderDz < -0.5) tmInput.forward = true;
-                if (toHolderDz > 0.5) tmInput.backward = true;
-                if (toHolderDx < -0.5) tmInput.left = true;
-                if (toHolderDx > 0.5) tmInput.right = true;
+            } else if (mark) {
+                steerInputTowardPoint(tmInput, tmPos, mark.markX, mark.markZ, DEF_MARK_STICK_RADIUS);
+                const face = Math.atan2(holder.group.position.x - tmPos.x, holder.group.position.z - tmPos.z);
+                tm.facingAngle = lerpAngle(tm.facingAngle || face, face, 1 - Math.exp(-8 * delta));
+                tm.group.rotation.y = tm.facingAngle;
             } else {
                 doTeammateWander(tm, delta, tmInput);
             }
@@ -2927,80 +3672,46 @@ function applyDayNightState(t) {
     }
 }
 
-// ─── Loading ────────────────────────────────────────────────
-const loadingBar = document.getElementById('loading-bar');
-const loadingText = document.getElementById('loading-text');
-const loadingScreen = document.getElementById('loading-screen');
-
-function updateLoading(progress, text) {
-    loadingBar.style.width = progress + '%';
-    loadingText.textContent = text;
-}
-
 // ─── Build Scene ────────────────────────────────────────────
-async function buildScene() {
-    updateLoading(5, 'Painting the sky...');
+function buildScene() {
     daySkyTexture = createSkyTexture('day');
     nightSkyTexture = createSkyTexture('night');
     scene.background = daySkyTexture;
     scene.environment = daySkyTexture;
-    await delay(80);
 
-    updateLoading(15, 'Laying the court surface...');
     createCourt(scene);
-    await delay(80);
 
-    updateLoading(30, 'Setting up the hoops...');
     createHoops(scene);
     hoopColliders = scene.userData.hoopColliders || [];
     refreshRimSensors();
     playerColliders = hoopColliders.concat(parkColliders);
-    await delay(80);
 
-    updateLoading(45, 'Planting trees & scenery...');
     createPark(scene);
     parkColliders = scene.userData.parkColliders || [];
     parkSeats = scene.userData.parkSeats || [];
     playerColliders = hoopColliders.concat(parkColliders);
-    await delay(80);
 
-    updateLoading(60, 'Building the city...');
     createCity(scene);
-    await delay(80);
-
-    updateLoading(80, 'Adjusting the lighting...');
     lightingGroup = createLighting(scene);
-    await delay(80);
-
-    updateLoading(82, 'Creating player...');
     playerData = createPlayer(scene);
-    await delay(80);
+    playerData.baseSpeedMultiplier = 1.0;
+    playerData.speedMultiplier = 1.0;
+    playerData.blocking = false;
 
-    updateLoading(85, 'Preparing basketball...');
     basketballData = createBasketball(scene);
     updateScoreHud();
     createShootingArc();
     createPassLine();
     createBallLocatorIndicators();
-    await delay(80);
 
-    updateLoading(88, 'Placing celestial bodies...');
     createCelestialBodies();
-    await delay(80);
-
-    updateLoading(92, 'Final touches...');
     collectTransparentObjects();
     collectAnimatedObjects();
     tagCityWindows();
     cacheLightReferences();
     cacheCelestialChildren();
-    await delay(100);
 
-    updateLoading(100, 'Game on!');
-    await delay(500);
-    loadingScreen.classList.add('fade-out');
-    setTimeout(() => loadingScreen.style.display = 'none', 1000);
-    setTimeout(() => showStartMenu(), 650);
+    showModeSelect();
 }
 
 function tagCityWindows() {
@@ -3144,10 +3855,6 @@ function createCelestialBodies() {
     scene.add(moonMesh);
 }
 
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 // ─── Sky Texture Generation ────────────────────────────────
 function createSkyTexture(mode) {
     const canvas = document.createElement('canvas');
@@ -3275,6 +3982,9 @@ function updateFreeRoam(delta) {
 // ─── Input Handlers ─────────────────────────────────────────
 function onKeyDown(e) {
     if (!gameStarted) return;
+    const tipOffActive = isSoloTipOffActive();
+    const tipOffSetup = tipOffActive && tipOffState?.phase === 'setup';
+    const tipOffContest = tipOffActive && tipOffState?.phase === 'contest';
 
     if (cameraMode === 'freeroam') {
         switch (e.code) {
@@ -3286,6 +3996,46 @@ function onKeyDown(e) {
             case 'ShiftLeft': case 'ShiftRight': moveState.down = true; e.preventDefault(); break;
         }
     } else if (cameraMode === 'player') {
+        if (tipOffSetup) {
+            switch (e.code) {
+                case 'ArrowUp': case 'KeyW':
+                case 'ArrowDown': case 'KeyS':
+                case 'ArrowLeft': case 'KeyA':
+                case 'ArrowRight': case 'KeyD':
+                case 'Space':
+                case 'KeyZ':
+                case 'KeyX':
+                case 'KeyB':
+                case 'KeyC':
+                case 'KeyV':
+                    e.preventDefault();
+                    break;
+            }
+            return;
+        }
+
+        if (tipOffContest) {
+            switch (e.code) {
+                case 'ArrowUp':    case 'KeyW': playerInput.forward = true; e.preventDefault(); break;
+                case 'ArrowDown':  case 'KeyS': playerInput.backward = true; e.preventDefault(); break;
+                case 'ArrowLeft':  case 'KeyA': playerInput.left = true; e.preventDefault(); break;
+                case 'ArrowRight': case 'KeyD': playerInput.right = true; e.preventDefault(); break;
+                case 'Space': playerInput.jump = true; e.preventDefault(); break;
+                case 'KeyZ':
+                    pickupQueued = true;
+                    pickupAssistTimer = PICKUP_ASSIST_DURATION;
+                    e.preventDefault();
+                    break;
+                case 'KeyX':
+                case 'KeyB':
+                case 'KeyC':
+                case 'KeyV':
+                    e.preventDefault();
+                    break;
+            }
+            return;
+        }
+
         if (shootingStance || passingStance) {
             // In shooting/pass stance: A/D = turn, X = fire, C = cancel
             switch (e.code) {
@@ -3294,6 +4044,7 @@ function onKeyDown(e) {
                 case 'ArrowLeft':  case 'KeyA': shootInput.turnLeft = true; e.preventDefault(); break;
                 case 'ArrowRight': case 'KeyD': shootInput.turnRight = true; e.preventDefault(); break;
                 case 'KeyX': shootQueued = true; e.preventDefault(); break;
+                case 'KeyB': blockHeld = true; e.preventDefault(); break;
                 case 'KeyZ': if (passingStance) { passQueued = true; } e.preventDefault(); break;
                 case 'KeyC': cancelShootQueued = true; e.preventDefault(); break;
             }
@@ -3321,12 +4072,16 @@ function onKeyDown(e) {
                     }
                     e.preventDefault();
                     break;
+                case 'KeyB':
+                    blockHeld = true;
+                    e.preventDefault();
+                    break;
                 case 'KeyC':
-                    sitToggleQueued = true;
+                    if (!blockHeld) sitToggleQueued = true;
                     e.preventDefault();
                     break;
                 case 'KeyV':
-                    if (playerData && !shootingStance && !dunkState && !sitState && playerData.stunTimer <= 0 && playerData.stamina >= STAMINA_EXHAUSTED) {
+                    if (playerData && !playerData.blocking && !shootingStance && !dunkState && !sitState && playerData.stunTimer <= 0 && playerData.stamina >= STAMINA_EXHAUSTED) {
                         playerData.punchQueued = true;
                         drainStamina(playerData, STAMINA_PUNCH_COST);
                     }
@@ -3356,6 +4111,7 @@ function onKeyUp(e) {
             shootInput.turnRight = false; break;
         case 'Space': moveState.up = false; playerInput.jump = false; break;
         case 'ShiftLeft': case 'ShiftRight': moveState.down = false; break;
+        case 'KeyB': blockHeld = false; break;
     }
 }
 
@@ -3405,6 +4161,8 @@ function switchCameraMode(mode) {
         shootTurnVelocity = 0;
         dunkState = null;
         sitState = null;
+        playerData.blocking = false;
+        blockHeld = false;
         if (basketballData) basketballData._dunkControl = false;
         resetPowerMeterCycle();
     }
@@ -3459,7 +4217,11 @@ function updateModeUI() {
         } else if (cameraMode === 'freeroam') {
             hint.textContent = 'Click to capture mouse | WASD / Arrows to move | Mouse to look | Space up | Shift down | ESC release';
         } else if (cameraMode === 'player') {
-            hint.textContent = 'WASD / Arrows to walk | Space jump | Z pick up / pass ball | V punch | C sit/stand | X shoot (hold ball) | Mid-air near rim: X dunk | In stance: A/D turn, X release, C cancel';
+            if (isSoloTipOffActive()) {
+                hint.textContent = 'Jump Ball: Move with WASD / Arrows | Space to jump | Z to secure possession in the air';
+            } else {
+                hint.textContent = 'WASD / Arrows walk | Space jump | Z pick up / pass | X shoot / dunk | B hold block | V punch | C sit/stand';
+            }
         }
     }
 }
@@ -3482,6 +4244,8 @@ function animate() {
     const delta = smoothedDelta;
     stabilizedElapsed += delta;
     updatePowerMeter(delta, gameStarted && cameraMode === 'player' && (shootingStance || passingStance));
+    const tipOffActive = isSoloTipOffActive();
+    const tipOffSetup = tipOffActive && tipOffState?.phase === 'setup';
 
     if (startMenuActive) {
         updateStartMenuCamera(delta);
@@ -3501,7 +4265,27 @@ function animate() {
         }
         playerMoveRight.crossVectors(playerMoveForward, worldUp).normalize();
 
-        if (sitToggleQueued) {
+        if (tipOffSetup) {
+            setEntityPose(playerData, tipOffState?.playerMark || SOLO_TIPOFF_LAYOUT.player);
+            playerData.velocity.set(0, 0, 0);
+            playerData.velocityY = 0;
+            playerData.isGrounded = true;
+            playerData.isJumping = false;
+            resetPlayerInput();
+            resetShootInput();
+            pickupQueued = false;
+            pickupAssistTimer = 0;
+            playerData._pickupAssistActive = false;
+            shootQueued = false;
+            passQueued = false;
+            cancelShootQueued = false;
+            sitToggleQueued = false;
+            shootingStance = false;
+            passingStance = false;
+            passTargetTeammate = null;
+        }
+
+        if (!tipOffActive && sitToggleQueued) {
             if (sitState) {
                 startStandingFromSeat();
             } else {
@@ -3516,9 +4300,62 @@ function animate() {
             pickupAssistTimer = 0;
             playerData._pickupAssistActive = false;
             pickupQueued = false;
+        } else if (tipOffSetup) {
+            pickupAssistTimer = 0;
+            playerData._pickupAssistActive = false;
+            pickupQueued = false;
         } else {
             updatePickupAssist(delta);
         }
+
+        if (tipOffActive) {
+            shootingStance = false;
+            passingStance = false;
+            passTargetTeammate = null;
+            shootQueued = false;
+            passQueued = false;
+            cancelShootQueued = false;
+            sitToggleQueued = false;
+            resetShootInput();
+        }
+
+        let playerBlocking = false;
+        if (
+            !tipOffActive &&
+            !sitState &&
+            !dunkState &&
+            playerData?.stunTimer <= 0 &&
+            playerData?.isGrounded &&
+            blockHeld &&
+            playerData.stamina > STAMINA_EXHAUSTED
+        ) {
+            playerBlocking = true;
+            drainStamina(playerData, STAMINA_BLOCK_DRAIN * delta);
+
+            if (shootingStance) {
+                shootingStance = false;
+                if (basketballData) basketballData._shootingStance = false;
+                shootAngle = 52;
+                shootTurnVelocity = 0;
+            }
+            if (passingStance) {
+                passingStance = false;
+                passTargetTeammate = null;
+                if (basketballData) basketballData._passingStance = false;
+            }
+
+            shootQueued = false;
+            passQueued = false;
+            cancelShootQueued = false;
+            pickupQueued = false;
+            pickupAssistTimer = 0;
+            playerData._pickupAssistActive = false;
+            playerData.punchQueued = false;
+            resetShootInput();
+            resetPlayerInput();
+            playerData.velocity.set(0, 0, 0);
+        }
+        playerData.blocking = playerBlocking;
 
         // ── Shooting state machine ────────────────────────
         if (playerData?.stunTimer > 0) {
@@ -3536,6 +4373,13 @@ function animate() {
             passQueued = false;
             cancelShootQueued = false;
             pickupQueued = false;
+            resetShootInput();
+            resetPlayerInput();
+        } else if (playerBlocking) {
+            shootingStance = false;
+            shootQueued = false;
+            cancelShootQueued = false;
+            passQueued = false;
             resetShootInput();
             resetPlayerInput();
         } else if (sitState) {
@@ -3635,7 +4479,7 @@ function animate() {
 
         // ── Pass state machine ──────────────────────────────
         // Handle active pass stance FIRST (so Z/X fire works before entry block clears passQueued)
-        if (passingStance) {
+        if (passingStance && !playerBlocking) {
             if (cancelShootQueued) {
                 // C cancels pass stance
                 passingStance = false;
@@ -3671,7 +4515,7 @@ function animate() {
             resetPlayerInput();
             resetShootInput();
         } else if (passQueued && basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData
-            && !shootingStance && !dunkState && !sitState) {
+            && !shootingStance && !dunkState && !sitState && !playerBlocking) {
             // Enter pass mode (not already in pass stance)
             const target = findNearestTeammate();
             if (target) {
@@ -3700,26 +4544,29 @@ function animate() {
             passQueued = false;
         }
 
-        const needsCarry = !!(basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData || dunkState || sitState);
+        const needsCarry = !!(basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData || dunkState || sitState || playerBlocking);
         let carryState = null;
         if (needsCarry) {
             _carryState.holding = !!(basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData);
             _carryState.shooting = shootingStance;
-            _carryState.dribbling = !shootingStance && !passingStance && !dunkState && !sitState && !!basketballData?.dribblingByPlayer && basketballData.heldByPlayerData === playerData;
+            _carryState.dribbling = !playerBlocking && !shootingStance && !passingStance && !dunkState && !sitState && !!basketballData?.dribblingByPlayer && basketballData.heldByPlayerData === playerData;
             _carryState.dribblePhase = basketballData?.dribblePhase || 0;
             _carryState.dunking = !!dunkState && dunkState.phase !== 'hang';
             _carryState.hanging = !!dunkState && dunkState.phase === 'hang';
             _carryState.seated = !!sitState;
             _carryState.seatSettled = !!sitState && sitState.phase === 'sit';
+            _carryState.blocking = playerBlocking;
             carryState = _carryState;
         }
 
-        if (sitState) {
+        if (sitState || playerBlocking) {
             resetPlayerInput();
             playerData.velocity.set(0, 0, 0);
             playerData.velocityY = 0;
-            playerData.isGrounded = true;
-            playerData.isJumping = false;
+            if (sitState) {
+                playerData.isGrounded = true;
+                playerData.isJumping = false;
+            }
         } else if (dunkState) {
             resetPlayerInput();
             playerData.velocity.set(0, 0, 0);
@@ -3748,24 +4595,54 @@ function animate() {
     // ── Update opponents ─────────────────────────────
     updateOpponentColliders();
     updateTeammateColliders();
-    for (const opp of opponents) {
-        updateOpponentAI(opp, delta);
+    updateTipOffState(delta);
+    const tipOffActiveNow = isSoloTipOffActive();
+    const tipOffSetupNow = tipOffActiveNow && tipOffState?.phase === 'setup';
+
+    if (tipOffActiveNow) {
+        for (let i = 0; i < opponents.length; i++) {
+            const opp = opponents[i];
+            if (opp === tipOffState?.contestOpponent) {
+                updateTipOffContestOpponent(delta);
+            } else {
+                const mark = tipOffState?.opponentMarks?.[i] || SOLO_TIPOFF_LAYOUT.opponents[i - 1] || SOLO_TIPOFF_LAYOUT.opponents[0];
+                updateTipOffStationaryEntity(opp, delta, mark);
+            }
+        }
+    } else {
+        for (const opp of opponents) {
+            updateOpponentAI(opp, delta);
+        }
     }
 
     // ── Update teammates ──────────────────────────────
     const allPlayers = (teammates.length > 0 || opponents.length > 0)
         ? [playerData, ...teammates, ...opponents] : null;
-    for (const tm of teammates) {
-        updateTeammateAI(tm, delta);
+    if (tipOffActiveNow) {
+        for (let i = 0; i < teammates.length; i++) {
+            const mark = tipOffState?.teammateMarks?.[i] || SOLO_TIPOFF_LAYOUT.teammates[i] || SOLO_TIPOFF_LAYOUT.teammates[0];
+            updateTipOffStationaryEntity(teammates[i], delta, mark);
+        }
+        updateTipOffReferee(delta);
+    } else {
+        for (const tm of teammates) {
+            updateTeammateAI(tm, delta);
+        }
+        // Referee sideline behavior (walk off court, then idle)
+        updateRefereeSideline(delta);
     }
 
     // ── Punch collision detection ────────────────────
-    updatePunchCollisions();
+    if (!tipOffActiveNow) updatePunchCollisions();
 
-    updateBasketball(basketballData, delta, playerColliders, playerData, allPlayers);
+    if (tipOffSetupNow) {
+        positionBallForTipOffHold();
+    } else {
+        updateBasketball(basketballData, delta, playerColliders, playerData, allPlayers);
+    }
 
     // ── Teammate & opponent catch detection ──────────
-    if (basketballData?.active && !basketballData.heldByPlayer) {
+    if (!tipOffActiveNow && basketballData?.active && !basketballData.heldByPlayer) {
         for (const tm of teammates) {
             if (tm.stunTimer > 0) continue;
             if (tm._aiSitState) continue;
@@ -3785,6 +4662,7 @@ function animate() {
             }
         }
     }
+    if (tipOffActiveNow) updateTipOffState(0);
 
     // ── Stamina system ────────────────────────────────
     if (playerData && cameraMode === 'player') {
@@ -3796,14 +4674,14 @@ function animate() {
         if (!tm.group.visible) continue;
         const tmSitting = !!tm._aiSitState;
         updateStaminaForPlayer(tm, delta, tmSitting);
-        updateAISitting(tm, delta);
+        if (matchLive) updateAISitting(tm, delta);
         updateStaminaBar(tm, camera);
     }
     for (const opp of opponents) {
         if (!opp.group.visible) continue;
         const oppSitting = !!opp._aiSitState;
         updateStaminaForPlayer(opp, delta, oppSitting);
-        updateAISitting(opp, delta);
+        if (matchLive) updateAISitting(opp, delta);
         updateStaminaBar(opp, camera);
     }
 
@@ -3842,7 +4720,8 @@ window.toggleDayNight = toggleDayNight;
 window.dropBall = dropBall;
 window.addTeammate = addTeammate;
 window.addOpponent = addOpponent;
-window.startGame = startGame;
+window.startSoloGame = startSoloGame;
+window.startFreePlay = startFreePlay;
 
 // ─── Start ──────────────────────────────────────────────────
 setGameplayHudVisible(false);

@@ -380,7 +380,9 @@ export function createPlayer(scene, options = {}) {
         isGrounded: true,
         jumpPressed: false,
         visualGroundOffsetY: PLAYER_FOOT_OFFSET,
+        baseSpeedMultiplier: 1.0,
         speedMultiplier: 1.0,
+        blocking: false,
         // ── Stamina ────────────────────────────────
         stamina: 100,
         maxStamina: 100,
@@ -697,7 +699,7 @@ const PUNCH_SHOULDER_Z_R =  1.15;   // right arm lifts OUT to the right (away fr
 
 function updatePunchState(pd, delta, carryState) {
     // Don't punch during shooting, sitting, dunking, or stun
-    if (carryState?.shooting || carryState?.seated || carryState?.dunking || carryState?.hanging || pd.stunTimer > 0) {
+    if (carryState?.shooting || carryState?.seated || carryState?.dunking || carryState?.hanging || carryState?.blocking || pd.stunTimer > 0) {
         pd.punchQueued = false;
         pd.punchActive = false;
         pd.punchPhase = 'none';
@@ -842,9 +844,30 @@ function animateLimbs(pd, isMoving, delta, carryState = null) {
 
     const poseLerp = lerp16;
     const carryingBall = !!carryState?.holding;
+    const blocking = !!carryState?.blocking;
 
     if (carryingBall) {
         const armLerp = lerp18;
+        if (blocking) {
+            const blockLerp = lerp12;
+            // Stable, rooted base while protecting the ball.
+            const kneeBend = 0.26;
+            j.leftHip.rotation.x += (0.10 - j.leftHip.rotation.x) * blockLerp;
+            j.rightHip.rotation.x += (0.10 - j.rightHip.rotation.x) * blockLerp;
+            j.leftKnee.rotation.x += (kneeBend - j.leftKnee.rotation.x) * blockLerp;
+            j.rightKnee.rotation.x += (kneeBend - j.rightKnee.rotation.x) * blockLerp;
+
+            // Two-arm high guard around chest/face area.
+            j.leftShoulder.rotation.x += (-1.25 - j.leftShoulder.rotation.x) * armLerp;
+            j.rightShoulder.rotation.x += (-1.25 - j.rightShoulder.rotation.x) * armLerp;
+            j.leftElbow.rotation.x += (-1.05 - j.leftElbow.rotation.x) * armLerp;
+            j.rightElbow.rotation.x += (-1.05 - j.rightElbow.rotation.x) * armLerp;
+            j.leftShoulder.rotation.z += (-0.22 - j.leftShoulder.rotation.z) * armLerp;
+            j.rightShoulder.rotation.z += (0.22 - j.rightShoulder.rotation.z) * armLerp;
+            j.leftShoulder.rotation.y += (0.18 - j.leftShoulder.rotation.y) * armLerp;
+            j.rightShoulder.rotation.y += (-0.18 - j.rightShoulder.rotation.y) * armLerp;
+            return;
+        }
         const shooting = !!carryState?.shooting;
         const dribbling = !shooting && (carryState?.dribbling ?? (isMoving && pd.isGrounded));
         const dribblePhase = carryState.dribblePhase || t;
@@ -989,6 +1012,22 @@ function animateLimbs(pd, isMoving, delta, carryState = null) {
             j.leftShoulder.rotation.y += (0.14 - j.leftShoulder.rotation.y) * holdLerp;
             j.rightShoulder.rotation.y += (-0.14 - j.rightShoulder.rotation.y) * holdLerp;
         }
+    } else if (blocking) {
+        const blockLerp = lerp12;
+        const kneeBend = 0.24;
+        j.leftHip.rotation.x += (0.08 - j.leftHip.rotation.x) * blockLerp;
+        j.rightHip.rotation.x += (0.08 - j.rightHip.rotation.x) * blockLerp;
+        j.leftKnee.rotation.x += (kneeBend - j.leftKnee.rotation.x) * blockLerp;
+        j.rightKnee.rotation.x += (kneeBend - j.rightKnee.rotation.x) * blockLerp;
+
+        j.leftShoulder.rotation.x += (-1.55 - j.leftShoulder.rotation.x) * blockLerp;
+        j.rightShoulder.rotation.x += (-1.55 - j.rightShoulder.rotation.x) * blockLerp;
+        j.leftElbow.rotation.x += (-1.2 - j.leftElbow.rotation.x) * blockLerp;
+        j.rightElbow.rotation.x += (-1.2 - j.rightElbow.rotation.x) * blockLerp;
+        j.leftShoulder.rotation.z += (-0.18 - j.leftShoulder.rotation.z) * blockLerp;
+        j.rightShoulder.rotation.z += (0.18 - j.rightShoulder.rotation.z) * blockLerp;
+        j.leftShoulder.rotation.y += (0.12 - j.leftShoulder.rotation.y) * blockLerp;
+        j.rightShoulder.rotation.y += (-0.12 - j.rightShoulder.rotation.y) * blockLerp;
     } else if (isMoving && pd.isGrounded) {
         // ── Walk cycle ──────────────────────────────────
         // Legs

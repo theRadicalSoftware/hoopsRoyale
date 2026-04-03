@@ -19,152 +19,346 @@
             display: block;
         }
 
-        /* ── Loading Screen ──────────────────────────────── */
-        #loading-screen {
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-            transition: opacity 1s ease-out;
-        }
-        #loading-screen.fade-out {
-            opacity: 0;
-            pointer-events: none;
-        }
-        #loading-screen h1 {
-            font-size: 4rem;
-            color: #ff6b35;
-            text-transform: uppercase;
-            letter-spacing: 0.3em;
-            text-shadow: 0 0 30px rgba(255, 107, 53, 0.5);
-            margin-bottom: 2rem;
-            font-weight: 900;
-        }
-        #loading-screen h1 span {
-            color: #fff;
-        }
-        #loading-bar-container {
-            width: 300px;
-            height: 4px;
-            background: rgba(255,255,255,0.1);
-            border-radius: 2px;
-            overflow: hidden;
-        }
-        #loading-bar {
-            width: 0%;
-            height: 100%;
-            background: linear-gradient(90deg, #ff6b35, #ffa726);
-            border-radius: 2px;
-            transition: width 0.3s ease;
-        }
-        #loading-text {
-            color: rgba(255,255,255,0.5);
-            font-size: 0.85rem;
-            margin-top: 1rem;
-            letter-spacing: 0.15em;
-            text-transform: uppercase;
-        }
-
-        /* ── Start Menu Overlay ─────────────────────────── */
-        #start-menu {
+        /* ── Mode Select ─────────────────────────────────── */
+        #mode-select {
             position: fixed;
             inset: 0;
             z-index: 900;
             display: flex;
             align-items: center;
             justify-content: center;
-            opacity: 0;
-            pointer-events: none;
             background:
-                radial-gradient(1200px 620px at 70% 10%, rgba(255, 140, 60, 0.12), transparent 62%),
-                radial-gradient(1000px 640px at 18% 84%, rgba(90, 150, 255, 0.12), transparent 62%),
-                linear-gradient(135deg, rgba(8, 16, 40, 0.54), rgba(12, 24, 52, 0.44));
-            transition: opacity 0.55s ease;
+                radial-gradient(1200px 620px at 70% 10%, rgba(255, 140, 60, 0.10), transparent 62%),
+                radial-gradient(1000px 640px at 18% 84%, rgba(90, 150, 255, 0.10), transparent 62%),
+                linear-gradient(135deg, rgba(8, 16, 40, 0.64), rgba(12, 24, 52, 0.54));
+            transition: opacity 0.6s ease;
         }
-        #start-menu.active {
-            opacity: 1;
-            pointer-events: auto;
-        }
-        #start-menu.fade-out {
+        #mode-select.fade-out {
             opacity: 0;
             pointer-events: none;
         }
-        #start-glass {
-            width: min(86vw, 560px);
-            padding: 36px 34px 30px;
-            border-radius: 20px;
-            border: 1px solid rgba(255,255,255,0.24);
-            background:
-                linear-gradient(180deg, rgba(255,255,255,0.2), rgba(255,255,255,0.09)),
-                linear-gradient(120deg, rgba(20, 34, 73, 0.55), rgba(19, 28, 54, 0.45));
-            backdrop-filter: blur(18px) saturate(135%);
-            box-shadow:
-                0 30px 70px rgba(0, 0, 0, 0.36),
-                inset 0 1px 0 rgba(255, 255, 255, 0.28);
-            color: #f5f7ff;
+        .mode-select-inner {
+            width: min(94vw, 880px);
             text-align: center;
+            color: #f5f7ff;
         }
-        #start-eyebrow {
-            font-size: 0.64rem;
-            letter-spacing: 0.3em;
+        .mode-select-eyebrow {
+            font-size: 0.62rem;
+            letter-spacing: 0.48em;
             text-transform: uppercase;
-            color: rgba(245, 248, 255, 0.68);
+            color: rgba(245, 248, 255, 0.52);
             margin-bottom: 14px;
+            text-shadow: 0 0 18px rgba(255, 255, 255, 0.12);
         }
-        #start-title {
-            font-size: clamp(2rem, 6vw, 3.4rem);
-            letter-spacing: 0.26em;
+        .mode-select-title {
+            font-size: clamp(2.2rem, 7vw, 3.8rem);
+            letter-spacing: 0.28em;
             text-transform: uppercase;
             font-weight: 800;
             line-height: 1;
-            margin-bottom: 16px;
-            text-shadow: 0 0 24px rgba(255, 255, 255, 0.18);
+            margin-bottom: 8px;
+            text-shadow: 0 0 30px rgba(255, 255, 255, 0.10);
         }
-        #start-title span {
+        .mode-select-title span {
             color: #ff7a3d;
-            text-shadow: 0 0 20px rgba(255, 122, 61, 0.38);
+            text-shadow: 0 0 24px rgba(255, 122, 61, 0.32);
         }
-        #start-subtitle {
-            font-size: 0.8rem;
-            letter-spacing: 0.15em;
+        .mode-select-subtitle {
+            font-size: 0.68rem;
+            letter-spacing: 0.22em;
             text-transform: uppercase;
-            color: rgba(232, 237, 255, 0.78);
-            margin-bottom: 26px;
+            color: rgba(255, 75, 75, 0.82);
+            margin-bottom: 32px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-shadow: 0 0 14px rgba(255, 60, 60, 0.35), 0 0 32px rgba(255, 60, 60, 0.10);
         }
-        #btn-start-game {
-            border: 1px solid rgba(255, 255, 255, 0.34);
+        .mode-select-subtitle .live-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: rgba(255, 65, 65, 0.95);
+            box-shadow: 0 0 6px rgba(255, 50, 50, 0.7), 0 0 14px rgba(255, 50, 50, 0.3);
+            animation: livePulse 2s ease-in-out infinite;
+            flex-shrink: 0;
+        }
+        @keyframes livePulse {
+            0%, 100% { opacity: 0.5; transform: scale(0.85); }
+            50% { opacity: 1; transform: scale(1.15); }
+        }
+        .mode-select-cards {
+            display: flex;
+            gap: 18px;
+            justify-content: center;
+            margin-bottom: 28px;
+        }
+        .mode-card {
+            flex: 1;
+            max-width: 260px;
+            padding: 28px 24px 26px;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background:
+                linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04)),
+                linear-gradient(135deg, rgba(20, 34, 73, 0.50), rgba(19, 28, 54, 0.40));
+            backdrop-filter: blur(16px) saturate(130%);
+            box-shadow:
+                0 20px 50px rgba(0, 0, 0, 0.28),
+                inset 0 1px 0 rgba(255, 255, 255, 0.18);
+            text-align: center;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+        .mode-card-solo {
+            cursor: pointer;
+            border-color: rgba(255, 122, 61, 0.30);
+        }
+        .mode-card-solo:hover {
+            transform: translateY(-3px) scale(1.015);
+            box-shadow:
+                0 26px 56px rgba(0, 0, 0, 0.34),
+                0 0 28px rgba(255, 122, 61, 0.10),
+                inset 0 1px 0 rgba(255, 255, 255, 0.24);
+            border-color: rgba(255, 122, 61, 0.50);
+        }
+        .mode-card-solo:active {
+            transform: translateY(0) scale(0.985);
+            transition-duration: 0.08s;
+        }
+        .mode-card-locked {
+            opacity: 0.45;
+            cursor: default;
+            pointer-events: none;
+        }
+        .mode-card-format {
+            font-size: 0.54rem;
+            letter-spacing: 0.24em;
+            text-transform: uppercase;
+            color: rgba(245, 248, 255, 0.42);
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+        .mode-card-title {
+            font-size: 1.7rem;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        .mode-card-desc {
+            font-size: 0.68rem;
+            letter-spacing: 0.1em;
+            color: rgba(232, 237, 255, 0.60);
+            margin-bottom: 18px;
+            line-height: 1.5;
+        }
+        .mode-card-btn {
+            display: inline-block;
+            border: 1px solid rgba(255, 255, 255, 0.28);
             border-radius: 999px;
-            padding: 11px 28px;
-            font-size: 0.72rem;
+            padding: 10px 26px;
+            font-size: 0.64rem;
             font-weight: 700;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: #fff;
+            background: linear-gradient(90deg, rgba(255, 121, 58, 0.88), rgba(255, 163, 57, 0.84));
+            box-shadow: 0 10px 24px rgba(255, 124, 60, 0.24);
+            transition: filter 0.15s ease, box-shadow 0.15s ease;
+        }
+        .mode-card-solo:hover .mode-card-btn {
+            filter: brightness(1.08);
+            box-shadow: 0 12px 28px rgba(255, 124, 60, 0.34);
+        }
+        .mode-card-soon {
+            display: inline-block;
+            padding: 9px 20px;
+            font-size: 0.56rem;
             letter-spacing: 0.18em;
             text-transform: uppercase;
-            cursor: pointer;
-            color: #ffffff;
-            background: linear-gradient(90deg, rgba(255, 121, 58, 0.9), rgba(255, 163, 57, 0.86));
-            box-shadow: 0 12px 30px rgba(255, 124, 60, 0.3);
-            transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
+            font-weight: 700;
+            color: rgba(180, 200, 240, 0.50);
+            border: 1px solid rgba(180, 200, 240, 0.16);
+            border-radius: 999px;
         }
-        #btn-start-game:hover {
-            transform: translateY(-1px) scale(1.01);
-            filter: brightness(1.06);
-            box-shadow: 0 16px 32px rgba(255, 124, 60, 0.36);
-        }
-        #btn-start-game:active {
-            transform: translateY(0);
-        }
-        #start-hint {
-            margin-top: 14px;
-            font-size: 0.65rem;
-            letter-spacing: 0.12em;
+        .mode-select-controls {
+            display: inline-flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            margin: 0 auto;
+            padding: 10px 18px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            background: linear-gradient(140deg, rgba(11, 22, 52, 0.70), rgba(8, 18, 45, 0.52));
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+            font-size: 0.62rem;
+            letter-spacing: 0.1em;
             text-transform: uppercase;
-            color: rgba(233, 239, 255, 0.56);
+            color: rgba(238, 244, 255, 0.88);
+            line-height: 1.4;
+            font-weight: 700;
+            text-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
         }
+        .mode-select-key {
+            display: inline-block;
+            padding: 2px 9px 1px;
+            border-radius: 999px;
+            background: linear-gradient(140deg, #ffd66a, #ffb54b);
+            color: #2f1907;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            box-shadow: 0 2px 10px rgba(255, 184, 79, 0.35);
+        }
+        .mode-select-action {
+            color: rgba(239, 244, 255, 0.96);
+        }
+        .mode-select-sep {
+            color: rgba(214, 226, 255, 0.52);
+            margin: 0 2px;
+        }
+        @media (max-width: 560px) {
+            .mode-select-cards {
+                flex-direction: column;
+                align-items: center;
+            }
+            .mode-card {
+                max-width: 320px;
+                width: 100%;
+            }
+        }
+
+        /* ── Countdown Overlay ───────────────────────────── */
+        #countdown-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 800;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+        #countdown-number {
+            font-size: clamp(6rem, 18vw, 12rem);
+            font-weight: 900;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #fff;
+            text-shadow:
+                0 0 60px rgba(255, 122, 61, 0.50),
+                0 0 120px rgba(255, 122, 61, 0.20),
+                0 4px 20px rgba(0, 0, 0, 0.40);
+            opacity: 0;
+            transform: scale(1.6);
+            transition: opacity 0.2s ease, transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        #countdown-number.pop {
+            opacity: 1;
+            transform: scale(1);
+        }
+        #countdown-number.go {
+            color: #ff7a3d;
+        }
+
+        /* ── Solo Scoreboard (centered, top) ─────────────── */
+        #solo-scoreboard {
+            position: fixed;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 120;
+            display: none;
+            align-items: stretch;
+            gap: 0;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.16);
+            background: linear-gradient(160deg, rgba(16, 24, 46, 0.62), rgba(10, 16, 34, 0.52));
+            box-shadow: 0 10px 28px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.12);
+            backdrop-filter: blur(4px);
+            pointer-events: none;
+            overflow: hidden;
+            transition: opacity 0.3s ease;
+        }
+        .sb-team {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 8px 20px 7px;
+            min-width: 96px;
+        }
+        .sb-team-label {
+            font-size: 0.48rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            font-weight: 700;
+            margin-bottom: 2px;
+        }
+        .sb-team-score {
+            font-size: 1.5rem;
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: 0.04em;
+        }
+        .sb-team-detail {
+            font-size: 0.46rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            font-weight: 600;
+            margin-top: 3px;
+        }
+        .sb-home .sb-team-label { color: rgba(255, 160, 120, 0.72); }
+        .sb-home .sb-team-score { color: rgba(255, 220, 200, 0.95); }
+        .sb-home .sb-team-detail { color: rgba(255, 180, 140, 0.55); }
+        .sb-away .sb-team-label { color: rgba(130, 175, 255, 0.72); }
+        .sb-away .sb-team-score { color: rgba(150, 195, 255, 0.95); }
+        .sb-away .sb-team-detail { color: rgba(130, 175, 255, 0.55); }
+        .sb-divider {
+            width: 1px;
+            background: rgba(255,255,255,0.12);
+        }
+
+        /* ── In-game Controls Bar (bottom) ───────────────── */
+        #controls-bar {
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 105;
+            display: inline-flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            padding: 8px 16px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            background: linear-gradient(140deg, rgba(11, 22, 52, 0.58), rgba(8, 18, 45, 0.42));
+            box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(6px);
+            font-size: 0.56rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: rgba(238, 244, 255, 0.78);
+            line-height: 1.4;
+            font-weight: 700;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.35s ease;
+        }
+        .ctrl-key {
+            display: inline-block;
+            padding: 2px 8px 1px;
+            border-radius: 999px;
+            background: linear-gradient(140deg, rgba(255, 214, 106, 0.85), rgba(255, 181, 75, 0.80));
+            color: #2f1907;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            font-size: 0.52rem;
+            box-shadow: 0 2px 8px rgba(255, 184, 79, 0.25);
+        }
+        .ctrl-action { color: rgba(239, 244, 255, 0.88); }
+        .ctrl-sep { color: rgba(214, 226, 255, 0.36); margin: 0 1px; }
 
         /* ── Top-left branding ───────────────────────────── */
         #ui-overlay {
@@ -505,23 +699,43 @@
     </style>
 </head>
 <body>
-    <!-- Loading -->
-    <div id="loading-screen">
-        <h1>Hoops <span>Royale</span></h1>
-        <div id="loading-bar-container">
-            <div id="loading-bar"></div>
-        </div>
-        <div id="loading-text">Loading court...</div>
-    </div>
-
-    <!-- Start Menu -->
-    <div id="start-menu" aria-hidden="true">
-        <div id="start-glass">
-            <div id="start-eyebrow">Street Session</div>
-            <div id="start-title"><span>Hoops</span> Royale</div>
-            <div id="start-subtitle">The Park Is Live</div>
-            <button id="btn-start-game" onclick="startGame()">Click To Begin</button>
-            <div id="start-hint">Environment will rotate slowly until start</div>
+    <!-- Mode Select -->
+    <div id="mode-select">
+        <div class="mode-select-inner">
+            <div class="mode-select-eyebrow">Street Basketball</div>
+            <div class="mode-select-title"><span>Hoops</span> Royale</div>
+            <div class="mode-select-subtitle"><span class="live-dot"></span>The Park Is Live</div>
+            <div class="mode-select-cards">
+                <div class="mode-card mode-card-solo" onclick="startSoloGame()">
+                    <div class="mode-card-format">Local Match &middot; 3v3</div>
+                    <div class="mode-card-title">Solo</div>
+                    <div class="mode-card-desc">You + 2 AI teammates vs 3 opponents</div>
+                    <div class="mode-card-btn">Run It</div>
+                </div>
+                <div class="mode-card mode-card-locked">
+                    <div class="mode-card-format">Multiplayer</div>
+                    <div class="mode-card-title">Online</div>
+                    <div class="mode-card-desc">Find a pickup game</div>
+                    <div class="mode-card-soon">Coming Soon</div>
+                </div>
+                <div class="mode-card mode-card-solo" onclick="startFreePlay()">
+                    <div class="mode-card-format">Sandbox</div>
+                    <div class="mode-card-title">Free Play</div>
+                    <div class="mode-card-desc">Explore the court &middot; build your own game</div>
+                    <div class="mode-card-btn">Drop In</div>
+                </div>
+            </div>
+            <div class="mode-select-controls">
+                <span class="mode-select-key">WASD</span><span class="mode-select-action">Move</span>
+                <span class="mode-select-sep">&middot;</span>
+                <span class="mode-select-key">Z</span><span class="mode-select-action">Pickup</span>
+                <span class="mode-select-sep">&middot;</span>
+                <span class="mode-select-key">X</span><span class="mode-select-action">Shoot</span>
+                <span class="mode-select-sep">&middot;</span>
+                <span class="mode-select-key">B</span><span class="mode-select-action">Block</span>
+                <span class="mode-select-sep">&middot;</span>
+                <span class="mode-select-key">V</span><span class="mode-select-action">Punch</span>
+            </div>
         </div>
     </div>
 
@@ -561,6 +775,41 @@
     </div>
 
     <div id="controls-hint">Click & Drag to look around | Scroll to zoom | Right-click & drag to pan</div>
+
+    <!-- Countdown Overlay -->
+    <div id="countdown-overlay"><div id="countdown-number">3</div></div>
+
+    <!-- Solo Scoreboard -->
+    <div id="solo-scoreboard">
+        <div class="sb-team sb-home">
+            <div class="sb-team-label">You</div>
+            <div class="sb-team-score" id="sb-home-score">0</div>
+            <div class="sb-team-detail" id="sb-home-detail">0/0</div>
+        </div>
+        <div class="sb-divider"></div>
+        <div class="sb-team sb-away">
+            <div class="sb-team-label">Opp</div>
+            <div class="sb-team-score" id="sb-away-score">0</div>
+            <div class="sb-team-detail" id="sb-away-detail">0/0</div>
+        </div>
+    </div>
+
+    <!-- In-game Controls Bar -->
+    <div id="controls-bar">
+        <span class="ctrl-key">WASD</span><span class="ctrl-action">Move</span>
+        <span class="ctrl-sep">&middot;</span>
+        <span class="ctrl-key">Space</span><span class="ctrl-action">Jump</span>
+        <span class="ctrl-sep">&middot;</span>
+        <span class="ctrl-key">Z</span><span class="ctrl-action">Pickup / Pass</span>
+        <span class="ctrl-sep">&middot;</span>
+        <span class="ctrl-key">X</span><span class="ctrl-action">Shoot / Dunk</span>
+        <span class="ctrl-sep">&middot;</span>
+        <span class="ctrl-key">B</span><span class="ctrl-action">Hold Block</span>
+        <span class="ctrl-sep">&middot;</span>
+        <span class="ctrl-key">V</span><span class="ctrl-action">Punch</span>
+        <span class="ctrl-sep">&middot;</span>
+        <span class="ctrl-key">C</span><span class="ctrl-action">Sit</span>
+    </div>
 
     <div id="shot-feedback" class="hud-hidden" aria-hidden="true">
         <div class="shot-feedback-main" id="shot-feedback-main">Bucket +2</div>
