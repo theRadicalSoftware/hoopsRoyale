@@ -317,6 +317,16 @@
             width: 1px;
             background: rgba(255,255,255,0.12);
         }
+        /* Corner variant (free play) — upper-left instead of top-center */
+        #solo-scoreboard.sb-corner {
+            left: 20px;
+            top: 16px;
+            transform: none;
+        }
+        /* Title sits below scoreboard in free play */
+        #ui-overlay.title-under-sb {
+            top: 78px;
+        }
 
         /* ── In-game Controls Bar (bottom) ───────────────── */
         #controls-bar {
@@ -365,10 +375,11 @@
             position: fixed;
             top: 20px; left: 20px;
             z-index: 100;
-            color: white;
+            color: #ff3a2f;
             font-size: 0.8rem;
-            opacity: 0.6;
+            opacity: 1;
             letter-spacing: 0.15em;
+            text-shadow: 0 0 7px rgba(255, 58, 47, 0.7), 0 0 18px rgba(255, 58, 47, 0.4), 0 0 40px rgba(255, 30, 20, 0.2);
             pointer-events: none;
         }
 
