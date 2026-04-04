@@ -96,7 +96,8 @@ export function createBasketball(scene) {
         _ignoreRimTimer: 0,
         _ignorePlayerTimer: 0,
         _ignorePlayerRef: null,
-        heldByPlayerData: null
+        heldByPlayerData: null,
+        _lastTouchRef: null
     };
 }
 
@@ -114,6 +115,7 @@ export function dropBasketballAtCenter(ball) {
     ball._ignoreRimTimer = 0;
     ball._ignorePlayerTimer = 0;
     ball._ignorePlayerRef = null;
+    ball._lastTouchRef = null;
     ball.dribblePhase = 0;
     ball.sleeping = false;
     ball.grounded = false;
@@ -146,6 +148,7 @@ export function tryPickUpBasketball(ball, playerData) {
 
     ball.heldByPlayer = true;
     ball.heldByPlayerData = playerData;
+    ball._lastTouchRef = playerData;
     ball.dribblingByPlayer = false;
     ball.dribblePhase = 0;
     ball._dunkControl = false;
@@ -423,6 +426,7 @@ function resolvePlayerCollision(ball, playerData) {
     ball.velocity.z += nz * impulse;
     ball.velocity.y += assistActive ? 0.05 : 0.15;
     ball.sleeping = false;
+    ball._lastTouchRef = playerData;
 }
 
 function bounceAgainstNormal(ball, nx, nz, restitution) {
@@ -879,6 +883,7 @@ function getTargetRimPosition(playerData) {
 export function shootBasketball(ball, playerData, launchAngleDeg, powerMultiplier = 1.0) {
     if (!ball || !ball.heldByPlayer || !playerData) return false;
     ball._lastShooterRef = playerData;
+    ball._lastTouchRef = playerData;
     const shotPower = THREE.MathUtils.clamp(powerMultiplier, SHOT_POWER_MIN, SHOT_POWER_MAX);
 
     const rim = getTargetRimPosition(playerData);
@@ -1036,6 +1041,7 @@ export function passBallToTarget(ball, fromPlayerData, targetPosition, passType)
 
     // Ignore the passer so ball clears them before collision kicks in
     ball._ignorePlayerRef = fromPlayerData;
+    ball._lastTouchRef = fromPlayerData;
     releaseHeldBall(ball, fromPlayerData, true);
     ball._ignorePlayerTimer = 0.45;
 
@@ -1065,6 +1071,7 @@ export function tryTeammateCatch(ball, teammateData) {
     // Catch it
     ball.heldByPlayer = true;
     ball.heldByPlayerData = teammateData;
+    ball._lastTouchRef = teammateData;
     ball.dribblingByPlayer = false;
     ball.dribblePhase = 0;
     ball._dunkControl = false;
@@ -1085,12 +1092,14 @@ export function tryTeammateCatch(ball, teammateData) {
  * Force-drop the ball from whoever is holding it (e.g. when punched).
  * Ball pops up and away in the given direction.
  */
-export function forceDropBall(ball, hitDirX, hitDirZ) {
+export function forceDropBall(ball, hitDirX, hitDirZ, puncher = null) {
     if (!ball || !ball.heldByPlayer) return;
     const holder = ball.heldByPlayerData;
     releaseHeldBall(ball, holder, false);
     // Give it a pop-up and push in the hit direction
     ball.velocity.set(hitDirX * 2.5, 3.0, hitDirZ * 2.5);
+    // The puncher deflected the ball — they are the last to touch
+    if (puncher) ball._lastTouchRef = puncher;
 }
 
 function createBallTexture() {

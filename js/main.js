@@ -192,10 +192,13 @@ const TIPOFF_OPP_REACTION_DELAY = 0.48;
 const TIPOFF_OPP_CONTEST_SPEED = 0.72;
 
 const SOLO_TIPOFF_LAYOUT = {
-    player: { x: -0.58, z: 0.85, facing: Math.PI },
-    contestOpponent: { x: 0.58, z: -0.85, facing: 0 },
-    referee: { x: 0, z: -0.4, facing: Math.PI * 0.5 },
-    refereeExit: { x: -11.0, z: 0, facing: Math.PI * 0.5 },
+    // NBA-style tip-off: both jumpers face each other at dead center
+    player: { x: 0, z: 0.9, facing: Math.PI },
+    contestOpponent: { x: 0, z: -0.9, facing: 0 },
+    // Referee stands to the side of center, facing the jumpers
+    referee: { x: 1.5, z: 0, facing: Math.PI * 1.5 },
+    // After tip-off, ref walks to sideline between benches (not behind them)
+    refereeExit: { x: -8.8, z: -3.0, facing: Math.PI * 0.5 },
     teammates: [
         { x: -3.8, z: 3.4, facing: Math.PI },
         { x: 3.8, z: 3.4, facing: Math.PI }
@@ -205,6 +208,20 @@ const SOLO_TIPOFF_LAYOUT = {
         { x: 3.8, z: -3.4, facing: 0 }
     ]
 };
+
+// ─── Out-of-Bounds / Inbounding ──────────────────────────
+const OOB_HALF_WIDTH = 7.62;           // court X extents (sideline)
+const OOB_HALF_LENGTH = 14.325;        // court Z extents (baseline)
+const OOB_FT_EXTENDED_Z = 8.535;       // free-throw line extended (HALF_LENGTH - KEY_LENGTH)
+const OOB_MARGIN = 0.15;               // small margin outside lines before triggering OOB
+const OOB_SIDELINE_INSET = 0.5;        // how far inside the sideline the inbounder stands
+const OOB_REF_SPEED = 2.2;             // ref walk speed toward ball
+const OOB_INBOUNDER_SPEED = 2.8;       // inbounder walk speed to throw-in spot
+const OOB_REF_PICKUP_DIST = 0.6;       // ref picks up ball within this distance
+const OOB_HANDOFF_DIST = 1.2;          // ref hands off ball within this distance
+const OOB_PASS_TIMEOUT = 6.0;          // seconds to pass in before auto-pass
+const OOB_SETTLE_DELAY = 0.4;          // brief pause after handoff before pass is required
+let inboundState = null;               // null when not in OOB sequence
 
 // ─── Shooting Power Meter ────────────────────────────────
 const POWER_METER_MIN_MULT = 0.55;
@@ -386,21 +403,32 @@ function setGameplayHudVisible(visible) {
         scoreHud?.classList.add('hud-hidden');
         oppScoreHud?.classList.add('hud-hidden');
         controlsHint?.classList.add('hud-hidden');
-        if (soloScoreboard) soloScoreboard.style.display = visible ? 'flex' : 'none';
+        uiOverlay?.classList.remove('title-under-sb');
+        if (soloScoreboard) {
+            soloScoreboard.classList.remove('sb-corner');
+            soloScoreboard.style.display = visible ? 'flex' : 'none';
+        }
         if (controlsBar) controlsBar.style.opacity = visible ? '1' : '0';
     } else if (isFree) {
-        // Free play: debug buttons, old score panels, old controls hint
+        // Free play: scoreboard in upper-left corner, title below it in red, no stamina card
         uiButtons?.classList[method]('hud-hidden');
-        scoreHud?.classList[method]('hud-hidden');
-        oppScoreHud?.classList[method]('hud-hidden');
+        scoreHud?.classList.add('hud-hidden');
+        oppScoreHud?.classList.add('hud-hidden');
+        staminaHud?.classList.add('hud-hidden');
         controlsHint?.classList[method]('hud-hidden');
-        if (soloScoreboard) soloScoreboard.style.display = 'none';
+        if (visible) uiOverlay?.classList.add('title-under-sb');
+        else uiOverlay?.classList.remove('title-under-sb');
+        if (soloScoreboard) {
+            soloScoreboard.classList.add('sb-corner');
+            soloScoreboard.style.display = visible ? 'flex' : 'none';
+        }
         if (controlsBar) controlsBar.style.opacity = '0';
     } else {
         uiButtons?.classList[method]('hud-hidden');
         controlsHint?.classList[method]('hud-hidden');
         scoreHud?.classList[method]('hud-hidden');
         oppScoreHud?.classList[method]('hud-hidden');
+        uiOverlay?.classList.remove('title-under-sb');
     }
 
     if (!visible && shotFeedback) {
@@ -447,12 +475,17 @@ function showModeSelect() {
     gameMode = null;
     blockHeld = false;
     tipOffState = null;
+    inboundState = null;
     if (refereeData?.group) refereeData.group.visible = false;
     if (isPointerLocked) document.exitPointerLock();
     controls.enabled = false;
     setupStartMenuOrbit();
     setGameplayHudVisible(false);
-    if (soloScoreboard) soloScoreboard.style.display = 'none';
+    if (soloScoreboard) {
+        soloScoreboard.style.display = 'none';
+        soloScoreboard.classList.remove('sb-corner');
+    }
+    uiOverlay?.classList.remove('title-under-sb');
     if (controlsBar) controlsBar.style.opacity = '0';
     if (countdownOverlay) countdownOverlay.style.display = 'none';
 
@@ -552,7 +585,6 @@ function positionBallForTipOffHold() {
     if (!basketballData || !refereeData?.group?.visible) return;
     const refPos = refereeData.group.position;
     const refGroundY = refPos.y + (refereeData.visualGroundOffsetY || 0.265);
-    const facing = refereeData.facingAngle || 0;
 
     basketballData.mesh.visible = true;
     basketballData.active = false;
@@ -572,11 +604,8 @@ function positionBallForTipOffHold() {
     basketballData.sleeping = false;
     basketballData.grounded = false;
     basketballData.idleFrames = 0;
-    basketballData.mesh.position.set(
-        refPos.x + Math.sin(facing) * 0.18,
-        refGroundY + 1.26,
-        refPos.z + Math.cos(facing) * 0.18
-    );
+    // Hold ball at court center between the two jumpers (ref reaches toward center)
+    basketballData.mesh.position.set(0, refGroundY + 1.26, 0);
     basketballData.prevPosition.copy(basketballData.mesh.position);
 }
 
@@ -599,7 +628,8 @@ function beginTipOffToss() {
     basketballData.sleeping = false;
     basketballData.grounded = false;
     basketballData.idleFrames = 0;
-    basketballData.mesh.position.set(refPos.x, refGroundY + 1.55, refPos.z);
+    // Toss ball from dead center between the two jumpers
+    basketballData.mesh.position.set(0, refGroundY + 1.55, 0);
     basketballData.prevPosition.copy(basketballData.mesh.position);
     basketballData.velocity.set(
         (Math.random() - 0.5) * TIPOFF_THROW_LATERAL,
@@ -675,6 +705,407 @@ function updateRefereeSideline(delta) {
         const input = { forward: false, backward: false, left: false, right: false, jump: false };
         updatePlayer(refereeData, delta, input, null, [], null);
     }
+}
+
+// ─── Out-of-Bounds / Inbounding System ─────────────────────────
+// Phases: 'detect' → 'ref_retrieve' → 'ref_deliver' → 'inbounder_ready' → 'passing' → done
+
+/** Check if ball position is outside the court boundary lines. */
+function isBallOutOfBounds(ball) {
+    if (!ball?.mesh?.visible || !ball.active) return false;
+    if (ball.heldByPlayer) return false;
+    const p = ball.mesh.position;
+    const mx = OOB_HALF_WIDTH + OOB_MARGIN;
+    const mz = OOB_HALF_LENGTH + OOB_MARGIN;
+    return Math.abs(p.x) > mx || Math.abs(p.z) > mz;
+}
+
+/**
+ * Compute the throw-in spot on the boundary nearest to where the ball went out.
+ * NBA rule: no nearer to the baseline than the free-throw line extended.
+ */
+function computeInboundSpot(ballPos) {
+    const bx = ballPos.x, bz = ballPos.z;
+    // Determine which boundary the ball crossed
+    const overX = Math.abs(bx) - OOB_HALF_WIDTH;
+    const overZ = Math.abs(bz) - OOB_HALF_LENGTH;
+
+    let spotX, spotZ, facingAngle;
+
+    if (overZ >= overX) {
+        // Went out over a baseline (Z boundary)
+        const side = Math.sign(bz);
+        spotZ = side * OOB_HALF_LENGTH;
+        // Clamp X to within court width
+        spotX = Math.max(-OOB_HALF_WIDTH + 1.0, Math.min(OOB_HALF_WIDTH - 1.0, bx));
+        // NBA rule: no closer to baseline than free-throw line extended
+        const ftExtended = OOB_FT_EXTENDED_Z;
+        if (Math.abs(spotZ) > ftExtended) {
+            // Ball went out behind baseline — move spot to FT line extended
+            spotZ = side * ftExtended;
+        }
+        // Inbounder faces toward court center from baseline
+        facingAngle = side > 0 ? Math.PI : 0;
+    } else {
+        // Went out over a sideline (X boundary)
+        const side = Math.sign(bx);
+        spotX = side * (OOB_HALF_WIDTH - OOB_SIDELINE_INSET);
+        // Clamp Z within court length
+        spotZ = Math.max(-OOB_HALF_LENGTH + 1.0, Math.min(OOB_HALF_LENGTH - 1.0, bz));
+        // Inbounder faces inward
+        facingAngle = side > 0 ? Math.PI * 1.5 : Math.PI * 0.5;
+    }
+
+    return { x: spotX, z: spotZ, facing: facingAngle };
+}
+
+/**
+ * Determine which team gets the inbound based on last-touch rule.
+ * Returns 'player' (user's team) or 'opponent'.
+ * The team that did NOT last touch the ball gets possession.
+ */
+function determineInboundTeam(ball) {
+    const lastTouch = ball._lastTouchRef;
+    if (!lastTouch) return 'player'; // default to player if unknown
+
+    // If last touch was by an opponent, player team gets it
+    if (opponents.includes(lastTouch)) return 'player';
+    // If last touch was by player or teammate, opponents get it
+    if (lastTouch === playerData || teammates.includes(lastTouch)) return 'opponent';
+
+    return 'player'; // fallback
+}
+
+/**
+ * Pick the best inbounder from the receiving team.
+ * Chooses the player closest to the throw-in spot.
+ */
+function pickInbounder(team, spot) {
+    let candidates;
+    if (team === 'player') {
+        candidates = [playerData, ...teammates].filter(p => p?.group?.visible && p.stunTimer <= 0);
+    } else {
+        candidates = opponents.filter(p => p?.group?.visible && p.stunTimer <= 0);
+    }
+    if (candidates.length === 0) return null;
+
+    let best = candidates[0], bestDist = Infinity;
+    for (const c of candidates) {
+        const dx = c.group.position.x - spot.x;
+        const dz = c.group.position.z - spot.z;
+        const d = dx * dx + dz * dz;
+        if (d < bestDist) { bestDist = d; best = c; }
+    }
+    return best;
+}
+
+/**
+ * Pick the best pass target for the inbounder from the same team.
+ * Chooses the teammate closest to the inbounder (but not the inbounder itself).
+ */
+function pickInboundTarget(team, inbounder) {
+    let candidates;
+    if (team === 'player') {
+        candidates = [playerData, ...teammates].filter(p => p?.group?.visible && p !== inbounder && p.stunTimer <= 0);
+    } else {
+        candidates = opponents.filter(p => p?.group?.visible && p !== inbounder && p.stunTimer <= 0);
+    }
+    if (candidates.length === 0) return null;
+
+    // Pick the closest teammate that is on-court
+    let best = null, bestDist = Infinity;
+    for (const c of candidates) {
+        const dx = c.group.position.x - inbounder.group.position.x;
+        const dz = c.group.position.z - inbounder.group.position.z;
+        const d = dx * dx + dz * dz;
+        if (d < bestDist) { bestDist = d; best = c; }
+    }
+    return best;
+}
+
+/** Initiate the OOB → inbound sequence. */
+function triggerOutOfBounds() {
+    if (!basketballData || !matchLive || inboundState) return;
+    if (gameMode !== 'solo') return; // only in solo mode for now
+
+    const ballPos = basketballData.mesh.position.clone();
+    const team = determineInboundTeam(basketballData);
+    const spot = computeInboundSpot(ballPos);
+
+    // Freeze the ball
+    basketballData.velocity.set(0, 0, 0);
+    basketballData.sleeping = true;
+
+    // Cancel any active player stances
+    shootingStance = false;
+    passingStance = false;
+    passTargetTeammate = null;
+    resetShootInput();
+    resetPowerMeterCycle();
+
+    const ref = ensureReferee();
+
+    inboundState = {
+        phase: 'ref_retrieve',
+        team,               // 'player' or 'opponent'
+        spot,               // { x, z, facing } throw-in location
+        ballOobPos: ballPos,
+        inbounder: null,    // set after ref delivers
+        passTarget: null,
+        passTimer: 0,
+        settleTimer: 0
+    };
+
+    // Ref walks to the ball
+    ref._sidelineState = null; // clear any existing sideline walk
+    ref.group.visible = true;
+
+    showShotFeedback('Out of Bounds', team === 'player' ? 'Your ball' : 'Opponent ball');
+}
+
+/** Walk an entity toward a target point. Returns true when arrived. */
+function walkEntityToward(entity, tx, tz, speed, delta) {
+    const pos = entity.group.position;
+    const dx = tx - pos.x;
+    const dz = tz - pos.z;
+    const dist = Math.hypot(dx, dz);
+
+    if (dist < 0.3) return true;
+
+    // Face the walk direction
+    const walkAngle = Math.atan2(dx, dz);
+    let angleDiff = walkAngle - (entity.facingAngle || 0);
+    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+    entity.facingAngle += angleDiff * (1 - Math.exp(-10 * delta));
+    entity.group.rotation.y = entity.facingAngle;
+
+    // Set movement input
+    const input = { forward: false, backward: false, left: false, right: false, jump: false };
+    if (dz < -0.1) input.forward = true;
+    if (dz > 0.1) input.backward = true;
+    if (dx < -0.1) input.left = true;
+    if (dx > 0.1) input.right = true;
+
+    entity.speedMultiplier = speed / 4.5; // relative to base WALK_SPEED
+    updatePlayer(entity, delta, input, null, [], null);
+    return false;
+}
+
+/** Stand an entity still and face a given angle. */
+function standEntityIdle(entity, facingAngle, delta) {
+    let angleDiff = facingAngle - (entity.facingAngle || 0);
+    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+    entity.facingAngle += angleDiff * (1 - Math.exp(-10 * delta));
+    entity.group.rotation.y = entity.facingAngle;
+
+    const input = { forward: false, backward: false, left: false, right: false, jump: false };
+    updatePlayer(entity, delta, input, null, [], null);
+}
+
+/** Core inbound state machine — called each frame when inboundState is active. */
+function updateInboundState(delta) {
+    if (!inboundState || !basketballData || !refereeData?.group) return;
+
+    const st = inboundState;
+    const ball = basketballData;
+    const ref = refereeData;
+    const ballPos = ball.mesh.position;
+
+    // ── Phase: ref_retrieve — referee walks to ball and picks it up
+    if (st.phase === 'ref_retrieve') {
+        const arrived = walkEntityToward(ref, ballPos.x, ballPos.z, OOB_REF_SPEED, delta);
+
+        // Keep ball visible on ground while ref approaches
+        ball.sleeping = true;
+        ball.velocity.set(0, 0, 0);
+
+        if (arrived || distXZ(ref.group.position, ballPos) < OOB_REF_PICKUP_DIST) {
+            // Ref "picks up" the ball — hold it at chest
+            ball.active = false;
+            ball.sleeping = false;
+            st.phase = 'ref_deliver';
+            // Pick inbounder now
+            st.inbounder = pickInbounder(st.team, st.spot);
+            if (!st.inbounder) {
+                // No valid inbounder — just drop ball at spot and resume
+                cancelInbound();
+                return;
+            }
+        }
+        return;
+    }
+
+    // ── Phase: ref_deliver — referee carries ball to the throw-in spot area
+    if (st.phase === 'ref_deliver') {
+        // Position ball at ref's hand level
+        const refPos = ref.group.position;
+        const refGroundY = refPos.y + (ref.visualGroundOffsetY || 0.265);
+        ballPos.set(refPos.x, refGroundY + 1.26, refPos.z);
+        ball.mesh.visible = true;
+
+        // Walk the inbounder toward the throw-in spot simultaneously
+        if (st.inbounder && st.inbounder !== playerData) {
+            walkEntityToward(st.inbounder, st.spot.x, st.spot.z, OOB_INBOUNDER_SPEED, delta);
+        } else if (st.inbounder === playerData) {
+            // Auto-walk user player to the spot (override input)
+            walkEntityToward(playerData, st.spot.x, st.spot.z, OOB_INBOUNDER_SPEED, delta);
+        }
+
+        // Ref walks toward a point near the throw-in spot (offset slightly)
+        const refTargetX = st.spot.x + (st.spot.facing === Math.PI * 0.5 ? -1.2 : st.spot.facing === Math.PI * 1.5 ? 1.2 : 0);
+        const refTargetZ = st.spot.z + (st.spot.facing === 0 ? -1.2 : st.spot.facing === Math.PI ? 1.2 : 0);
+        const refArrived = walkEntityToward(ref, refTargetX, refTargetZ, OOB_REF_SPEED, delta);
+
+        // Check if inbounder is at the spot and ref is nearby
+        const inbounderAtSpot = distXZ(st.inbounder.group.position, { x: st.spot.x, z: st.spot.z }) < 1.0;
+
+        if (refArrived && inbounderAtSpot) {
+            st.phase = 'handoff';
+        }
+        return;
+    }
+
+    // ── Phase: handoff — ref hands ball to the inbounder
+    if (st.phase === 'handoff') {
+        // Snap ball to inbounder's hands
+        const inbPos = st.inbounder.group.position;
+        const inbGroundY = inbPos.y + (st.inbounder.visualGroundOffsetY || 0.265);
+        ballPos.set(inbPos.x, inbGroundY + 1.18, inbPos.z);
+
+        // Face inbounder toward court
+        standEntityIdle(st.inbounder, st.spot.facing, delta);
+        // Ref stands and faces the inbounder
+        const refFace = Math.atan2(inbPos.x - ref.group.position.x, inbPos.z - ref.group.position.z);
+        standEntityIdle(ref, refFace, delta);
+
+        ball.active = false;
+        ball.mesh.visible = true;
+
+        st.settleTimer += delta;
+        if (st.settleTimer >= OOB_SETTLE_DELAY) {
+            st.phase = 'passing';
+            st.passTimer = 0;
+            // Pick best pass target
+            st.passTarget = pickInboundTarget(st.team, st.inbounder);
+        }
+        return;
+    }
+
+    // ── Phase: passing — inbounder must pass the ball in
+    if (st.phase === 'passing') {
+        const inbPos = st.inbounder.group.position;
+        const inbGroundY = inbPos.y + (st.inbounder.visualGroundOffsetY || 0.265);
+        ballPos.set(inbPos.x, inbGroundY + 1.18, inbPos.z);
+        ball.mesh.visible = true;
+        ball.active = false;
+
+        // Inbounder holds position, faces court
+        standEntityIdle(st.inbounder, st.spot.facing, delta);
+        // Ref idles nearby
+        const refFace = Math.atan2(inbPos.x - ref.group.position.x, inbPos.z - ref.group.position.z);
+        standEntityIdle(ref, refFace, delta);
+
+        st.passTimer += delta;
+
+        // AI inbounder auto-passes after a brief delay
+        if (st.inbounder !== playerData) {
+            if (st.passTimer >= 1.0 && st.passTarget) {
+                executeInboundPass(st.inbounder, st.passTarget);
+                return;
+            }
+            // No target — just drop ball and resume after timeout
+            if (st.passTimer >= OOB_PASS_TIMEOUT) {
+                cancelInbound();
+                return;
+            }
+        } else {
+            // Player is the inbounder — they press Z to pass in
+            // (handled in the input section — passQueued triggers executeInboundPass)
+            // Auto-pass on timeout
+            if (st.passTimer >= OOB_PASS_TIMEOUT && st.passTarget) {
+                executeInboundPass(playerData, st.passTarget);
+                return;
+            }
+        }
+        return;
+    }
+}
+
+/** Execute the inbound pass and end the inbound sequence. */
+function executeInboundPass(from, target) {
+    if (!basketballData || !from || !target) {
+        cancelInbound();
+        return;
+    }
+
+    const ball = basketballData;
+
+    // Activate ball and give it to the inbounder momentarily
+    ball.active = true;
+    ball.sleeping = false;
+    ball.heldByPlayer = true;
+    ball.heldByPlayerData = from;
+    ball._lastTouchRef = from;
+
+    // Fire pass
+    const targetPos = new THREE.Vector3(
+        target.group.position.x,
+        target.group.position.y + (target.visualGroundOffsetY || 0.265) + 1.18,
+        target.group.position.z
+    );
+    passBallToTarget(ball, from, targetPos, 'chest');
+
+    // End inbound
+    finalizeInbound();
+}
+
+/** Clean up inbound state and resume play. */
+function finalizeInbound() {
+    inboundState = null;
+    matchLive = true;
+
+    // Restore ref speed and send to sideline
+    if (refereeData) {
+        refereeData.speedMultiplier = REF_BASE_SPEED / 4.5;
+        refereeData._sidelineState = {
+            phase: 'walking',
+            target: { ...SOLO_TIPOFF_LAYOUT.refereeExit },
+            idleFacing: SOLO_TIPOFF_LAYOUT.refereeExit.facing
+        };
+    }
+}
+
+/** Cancel inbound (no valid target) — drop ball at spot and resume. */
+function cancelInbound() {
+    if (!inboundState || !basketballData) {
+        inboundState = null;
+        matchLive = true;
+        return;
+    }
+    const spot = inboundState.spot;
+    basketballData.mesh.position.set(spot.x, 1.5, spot.z);
+    basketballData.velocity.set(0, 0, 0);
+    basketballData.active = true;
+    basketballData.sleeping = false;
+    basketballData.heldByPlayer = false;
+    basketballData.heldByPlayerData = null;
+    basketballData.mesh.visible = true;
+
+    finalizeInbound();
+}
+
+/** Utility: XZ distance between two positions. */
+function distXZ(a, b) {
+    const dx = a.x - (b.x ?? 0);
+    const dz = a.z - (b.z ?? 0);
+    return Math.hypot(dx, dz);
+}
+
+/** Check if inbound is currently active. */
+function isInboundActive() {
+    return !!inboundState;
 }
 
 function setupSoloTipOff() {
@@ -1826,20 +2257,26 @@ function updateOpponentAI(opp, delta) {
         const distToRim = Math.hypot(oppPos.x, oppPos.z - OPP_TARGET_RIM_Z);
         const inShootRange = distToRim > OPP_SHOOT_RANGE_MIN && distToRim < OPP_SHOOT_RANGE_MAX;
 
-        // Check if pressured by enemies (player or teammates)
+        // Check if pressured by enemies (player or teammates) — continuous each frame
         let nearestEnemyDist = Infinity;
-        if (playerData?.group?.visible) {
-            nearestEnemyDist = Math.hypot(playerData.group.position.x - oppPos.x, playerData.group.position.z - oppPos.z);
+        let nearbyEnemyCount = 0;
+        if (playerData?.group?.visible && playerData.stunTimer <= 0) {
+            const d = Math.hypot(playerData.group.position.x - oppPos.x, playerData.group.position.z - oppPos.z);
+            if (d < nearestEnemyDist) nearestEnemyDist = d;
+            if (d < 3.5) nearbyEnemyCount++;
         }
         for (const tm of teammates) {
             if (!tm.group.visible || tm.stunTimer > 0) continue;
             const d = Math.hypot(tm.group.position.x - oppPos.x, tm.group.position.z - oppPos.z);
             if (d < nearestEnemyDist) nearestEnemyDist = d;
+            if (d < 3.5) nearbyEnemyCount++;
         }
-        const pressured = nearestEnemyDist < 2.5;
+        const pressured = nearestEnemyDist < 2.8;
+        const swarmed = nearbyEnemyCount >= 2;
 
-        // Pass to open teammate when pressured or held too long
-        if ((pressured && opp._holdTimer > 0.3) || opp._holdTimer > 4.0) {
+        // Pass to open teammate when pressured/swarmed or held too long
+        const passHoldThreshold = swarmed ? 0.12 : 0.3;
+        if ((pressured && opp._holdTimer > passHoldThreshold) || (swarmed && opp._holdTimer > 0.08) || opp._holdTimer > 3.5) {
             const passTarget = findOpenOpponentForPass(opp);
             if (passTarget) {
                 const tgtPos = passTarget.group.position;
@@ -1919,15 +2356,29 @@ function updateOpponentAI(opp, delta) {
             return;
         }
 
-        // Otherwise dribble toward the target rim
-        const toRimDx = 0 - oppPos.x;
-        const toRimDz = OPP_TARGET_RIM_Z - oppPos.z;
-        // Aim for shooting range, not directly at rim
-        const aimZ = OPP_TARGET_RIM_Z - 5.0;
-        const aimDx = (Math.random() > 0.5 ? 3 : -3) * ((opp._holdSeed || 0.5) - 0.25);
-        const atDriveTarget = opp._driveTarget && Math.hypot(opp._driveTarget.x - oppPos.x, opp._driveTarget.z - oppPos.z) < 1.0;
-        if (!opp._driveTarget || opp._holdTimer < 0.05 || atDriveTarget) {
-            opp._driveTarget = { x: aimDx, z: aimZ };
+        // Otherwise dribble toward the target rim — with defender avoidance
+        const atDriveTarget = opp._driveTarget && Math.hypot(opp._driveTarget.x - oppPos.x, opp._driveTarget.z - oppPos.z) < 1.2;
+        const driveStale = (opp._driveAge = (opp._driveAge || 0) + delta) > 1.8;
+        if (!opp._driveTarget || opp._holdTimer < 0.05 || atDriveTarget || driveStale || (swarmed && opp._driveAge > 0.5)) {
+            opp._driveAge = 0;
+            // Pick a drive target that avoids defenders
+            const seed = opp._holdSeed || 0.5;
+            const baseX = (seed > 0.5 ? 3.5 : -3.5) * (seed - 0.25);
+            const baseZ = OPP_TARGET_RIM_Z - 3.0 - Math.random() * 4.0;
+            let bestX = baseX, bestZ = baseZ, bestClear = 0;
+            // Try a few candidates and pick the one with most clearance from defenders
+            for (let attempt = 0; attempt < 5; attempt++) {
+                const cx = (attempt === 0) ? baseX : -6 + Math.random() * 12;
+                const cz = (attempt === 0) ? baseZ : OPP_TARGET_RIM_Z - 2.0 - Math.random() * 6.0;
+                let minD = Infinity;
+                if (playerData?.group?.visible) minD = Math.min(minD, Math.hypot(playerData.group.position.x - cx, playerData.group.position.z - cz));
+                for (const tm2 of teammates) {
+                    if (!tm2.group.visible || tm2.stunTimer > 0) continue;
+                    minD = Math.min(minD, Math.hypot(tm2.group.position.x - cx, tm2.group.position.z - cz));
+                }
+                if (minD > bestClear) { bestClear = minD; bestX = cx; bestZ = cz; }
+            }
+            opp._driveTarget = { x: bestX, z: bestZ };
         }
         const drvDx = opp._driveTarget.x - oppPos.x;
         const drvDz = opp._driveTarget.z - oppPos.z;
@@ -1996,11 +2447,16 @@ function updateOpponentAI(opp, delta) {
 
         if (isTeammateOpp && holder?.group?.visible) {
             // Teammate opponent has ball — get open for a pass near the target rim
-            if (!opp._positionTarget || Math.random() < 0.005) {
-                const spread = (opponents.indexOf(opp) % 2 === 0) ? -4 : 4;
+            if (!opp._positionTarget || Math.random() < 0.02) {
+                // Spread out near the rim: pick a spot away from other opponents
+                const idx = opponents.indexOf(opp);
+                const slots = [{ x: -5, z: OPP_TARGET_RIM_Z - 6 }, { x: 5, z: OPP_TARGET_RIM_Z - 6 },
+                               { x: 0, z: OPP_TARGET_RIM_Z - 9 }, { x: -3, z: OPP_TARGET_RIM_Z - 3 },
+                               { x: 3, z: OPP_TARGET_RIM_Z - 3 }];
+                const slot = slots[idx % slots.length];
                 opp._positionTarget = {
-                    x: spread + (Math.random() - 0.5) * 3,
-                    z: OPP_TARGET_RIM_Z - 5 - Math.random() * 5
+                    x: slot.x + (Math.random() - 0.5) * 2,
+                    z: slot.z + (Math.random() - 0.5) * 2
                 };
             }
             const ptDx = opp._positionTarget.x - oppPos.x;
@@ -2069,27 +2525,55 @@ function updateOpponentAI(opp, delta) {
 function findOpenOpponentForPass(fromOpp) {
     let best = null;
     let bestScore = -Infinity;
+    const fromPos = fromOpp.group.position;
+
+    // Determine how pressured the passer is — lower openness threshold when swarmed
+    let passerNearbyCount = 0;
+    const enemies = [playerData, ...teammates];
+    for (const e of enemies) {
+        if (!e?.group?.visible || e.stunTimer > 0) continue;
+        if (Math.hypot(e.group.position.x - fromPos.x, e.group.position.z - fromPos.z) < 3.5) passerNearbyCount++;
+    }
+    const minOpenness = passerNearbyCount >= 2 ? 1.2 : 2.0;
+
     for (const other of opponents) {
         if (other === fromOpp) continue;
         if (!other.group.visible || other.stunTimer > 0 || other._aiSitState) continue;
 
         const otherPos = other.group.position;
-        // Check if enemy is nearby this potential receiver
         let nearestEnemyDist = Infinity;
-        if (playerData?.group?.visible) {
-            nearestEnemyDist = Math.hypot(playerData.group.position.x - otherPos.x, playerData.group.position.z - otherPos.z);
-        }
-        for (const tm of teammates) {
-            if (!tm.group.visible) continue;
-            const d = Math.hypot(tm.group.position.x - otherPos.x, tm.group.position.z - otherPos.z);
+        for (const e of enemies) {
+            if (!e?.group?.visible) continue;
+            const d = Math.hypot(e.group.position.x - otherPos.x, e.group.position.z - otherPos.z);
             if (d < nearestEnemyDist) nearestEnemyDist = d;
         }
+        if (nearestEnemyDist < minOpenness) continue;
 
-        // Score: prefer receivers who are open (far from enemies) and closer to the target rim
         const openness = Math.min(nearestEnemyDist, 8);
         const rimProximity = Math.max(0, 20 - Math.hypot(otherPos.x, otherPos.z - 12.73));
-        const score = openness * 2 + rimProximity;
-        if (nearestEnemyDist > 2.0 && score > bestScore) {
+
+        // Penalize if an enemy is standing in the pass lane
+        const passDx = otherPos.x - fromPos.x;
+        const passDz = otherPos.z - fromPos.z;
+        const passDist = Math.hypot(passDx, passDz);
+        let lanePenalty = 0;
+        if (passDist > 0.5) {
+            const invD = 1 / passDist;
+            const laneUx = passDx * invD;
+            const laneUz = passDz * invD;
+            for (const e of enemies) {
+                if (!e?.group?.visible) continue;
+                const ox = e.group.position.x - fromPos.x;
+                const oz = e.group.position.z - fromPos.z;
+                const proj = ox * laneUx + oz * laneUz;
+                if (proj < 0.5 || proj > passDist - 0.5) continue;
+                const perpDist = Math.abs(ox * laneUz - oz * laneUx);
+                if (perpDist < 1.5) lanePenalty += (1.5 - perpDist) * 4;
+            }
+        }
+
+        const score = openness * 3 + rimProximity - lanePenalty;
+        if (score > bestScore) {
             bestScore = score;
             best = other;
         }
@@ -2101,9 +2585,10 @@ function doOpponentWander(opp, delta, tmInput) {
     const oppPos = opp.group.position;
 
     if (!opp._wanderTarget || opp._wanderDist < 1.0) {
+        // Stay within the court — bias toward their half (positive Z)
         opp._wanderTarget = {
-            x: -8 + Math.random() * 16,
-            z: -13 + Math.random() * 26
+            x: -6 + Math.random() * 12,
+            z: 2 + Math.random() * 10
         };
         opp._wanderPause = OPP_WANDER_PAUSE_MIN + Math.random() * (OPP_WANDER_PAUSE_MAX - OPP_WANDER_PAUSE_MIN);
     }
@@ -2171,7 +2656,7 @@ function updatePunchCollisions() {
                     shootingStance = false;
                     passingStance = false;
                 }
-                forceDropBall(basketballData, hitDirX, hitDirZ);
+                forceDropBall(basketballData, hitDirX, hitDirZ, attacker);
             }
 
             // Only one hit per punch swing
@@ -2320,13 +2805,13 @@ function findOpenTeammateForPass(fromTm) {
                 const ox = opp.group.position.x - fromPos.x;
                 const oz = opp.group.position.z - fromPos.z;
                 const proj = ox * laneUx + oz * laneUz;
-                if (proj < 0.5 || proj > passDist - 0.5) continue;  // not between passer and target
+                if (proj < 0.5 || proj > passDist - 0.5) continue;
                 const perpDist = Math.abs(ox * laneUz - oz * laneUx);
-                if (perpDist < 1.2) lanePenalty += (1.2 - perpDist) * 3;  // closer to lane = bigger penalty
+                if (perpDist < 1.5) lanePenalty += (1.5 - perpDist) * 4;
             }
         }
 
-        return openness * 2 + rimProximity - lanePenalty;
+        return openness * 3 + rimProximity - lanePenalty;
     }
 
     for (const other of teammates) {
@@ -2354,9 +2839,10 @@ function doTeammateWander(tm, delta, tmInput) {
     const tmPos = tm.group.position;
 
     if (!tm._wanderTarget || tm._wanderDist < 1.0) {
+        // Stay within the court — bias toward their half (negative Z)
         tm._wanderTarget = {
-            x: -8 + Math.random() * 16,
-            z: -13 + Math.random() * 26
+            x: -6 + Math.random() * 12,
+            z: -12 + Math.random() * 10
         };
         tm._wanderPause = 0.3 + Math.random() * 1.0;
     }
@@ -2543,12 +3029,26 @@ function updateTeammateAI(tm, delta) {
             return;
         }
 
-        // Otherwise dribble toward the target rim
-        const aimZ = TM_TARGET_RIM_Z + 5.0;
-        const aimDx = (Math.random() > 0.5 ? 3 : -3) * ((tm._holdSeed || 0.5) - 0.25);
-        const atDriveTarget = tm._driveTarget && Math.hypot(tm._driveTarget.x - tmPos.x, tm._driveTarget.z - tmPos.z) < 1.0;
-        if (!tm._driveTarget || tm._holdTimer < 0.05 || atDriveTarget) {
-            tm._driveTarget = { x: aimDx, z: aimZ };
+        // Otherwise dribble toward the target rim — with defender avoidance
+        const atDriveTarget = tm._driveTarget && Math.hypot(tm._driveTarget.x - tmPos.x, tm._driveTarget.z - tmPos.z) < 1.2;
+        const tmDriveStale = (tm._driveAge = (tm._driveAge || 0) + delta) > 1.8;
+        if (!tm._driveTarget || tm._holdTimer < 0.05 || atDriveTarget || tmDriveStale || (swarmed && tm._driveAge > 0.5)) {
+            tm._driveAge = 0;
+            const seed = tm._holdSeed || 0.5;
+            const baseX = (seed > 0.5 ? 3.5 : -3.5) * (seed - 0.25);
+            const baseZ = TM_TARGET_RIM_Z + 3.0 + Math.random() * 4.0;
+            let bestX = baseX, bestZ = baseZ, bestClear = 0;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                const cx = (attempt === 0) ? baseX : -6 + Math.random() * 12;
+                const cz = (attempt === 0) ? baseZ : TM_TARGET_RIM_Z + 2.0 + Math.random() * 6.0;
+                let minD = Infinity;
+                for (const opp2 of opponents) {
+                    if (!opp2.group.visible || opp2.stunTimer > 0) continue;
+                    minD = Math.min(minD, Math.hypot(opp2.group.position.x - cx, opp2.group.position.z - cz));
+                }
+                if (minD > bestClear) { bestClear = minD; bestX = cx; bestZ = cz; }
+            }
+            tm._driveTarget = { x: bestX, z: bestZ };
         }
         const drvDx = tm._driveTarget.x - tmPos.x;
         const drvDz = tm._driveTarget.z - tmPos.z;
@@ -2613,12 +3113,16 @@ function updateTeammateAI(tm, delta) {
         const isAlly = holder === playerData || (holder && holder.isTeammate);
 
         if (isAlly && holder?.group?.visible) {
-            // Ally has ball — position near target rim for a pass
-            if (!tm._positionTarget || Math.random() < 0.005) {
-                const spread = (teammates.indexOf(tm) % 2 === 0) ? -4 : 4;
+            // Ally has ball — spread out near the target rim for a pass
+            if (!tm._positionTarget || Math.random() < 0.02) {
+                const idx = teammates.indexOf(tm);
+                const slots = [{ x: -5, z: TM_TARGET_RIM_Z + 6 }, { x: 5, z: TM_TARGET_RIM_Z + 6 },
+                               { x: 0, z: TM_TARGET_RIM_Z + 9 }, { x: -3, z: TM_TARGET_RIM_Z + 3 },
+                               { x: 3, z: TM_TARGET_RIM_Z + 3 }];
+                const slot = slots[idx % slots.length];
                 tm._positionTarget = {
-                    x: spread + (Math.random() - 0.5) * 3,
-                    z: TM_TARGET_RIM_Z + 5 + Math.random() * 5
+                    x: slot.x + (Math.random() - 0.5) * 2,
+                    z: slot.z + (Math.random() - 0.5) * 2
                 };
             }
             const ptDx = tm._positionTarget.x - tmPos.x;
@@ -4056,8 +4560,11 @@ function onKeyDown(e) {
                 case 'ArrowRight': case 'KeyD': playerInput.right = true; e.preventDefault(); break;
                 case 'Space': playerInput.jump = true; e.preventDefault(); break;
                 case 'KeyZ':
+                    // Inbound pass-in: Z fires the inbound pass
+                    if (isInboundActive() && inboundState?.phase === 'passing' && inboundState?.inbounder === playerData) {
+                        passQueued = true;
                     // If holding ball and teammates exist → pass; otherwise pickup
-                    if (basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData && teammates.length > 0) {
+                    } else if (basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData && teammates.length > 0) {
                         passQueued = true;
                     } else {
                         pickupQueued = true;
@@ -4219,6 +4726,10 @@ function updateModeUI() {
         } else if (cameraMode === 'player') {
             if (isSoloTipOffActive()) {
                 hint.textContent = 'Jump Ball: Move with WASD / Arrows | Space to jump | Z to secure possession in the air';
+            } else if (isInboundActive() && inboundState?.phase === 'passing' && inboundState?.inbounder === playerData) {
+                hint.textContent = 'Inbound: Press Z to pass the ball in';
+            } else if (isInboundActive()) {
+                hint.textContent = 'Out of Bounds — waiting for inbound...';
             } else {
                 hint.textContent = 'WASD / Arrows walk | Space jump | Z pick up / pass | X shoot / dunk | B hold block | V punch | C sit/stand';
             }
@@ -4317,6 +4828,31 @@ function animate() {
             cancelShootQueued = false;
             sitToggleQueued = false;
             resetShootInput();
+        }
+
+        // ── Inbound pass-in: player presses Z to pass the ball in ──
+        if (isInboundActive() && inboundState?.phase === 'passing'
+            && inboundState.inbounder === playerData && passQueued) {
+            const target = inboundState.passTarget;
+            if (target) {
+                executeInboundPass(playerData, target);
+            }
+            passQueued = false;
+            pickupQueued = false;
+            shootQueued = false;
+        }
+        // During inbound, block all other player actions
+        if (isInboundActive()) {
+            shootingStance = false;
+            passingStance = false;
+            passTargetTeammate = null;
+            shootQueued = false;
+            passQueued = false;
+            cancelShootQueued = false;
+            sitToggleQueued = false;
+            pickupQueued = false;
+            resetShootInput();
+            resetPlayerInput();
         }
 
         let playerBlocking = false;
@@ -4609,6 +5145,13 @@ function animate() {
                 updateTipOffStationaryEntity(opp, delta, mark);
             }
         }
+    } else if (isInboundActive()) {
+        // During inbound: all AI players stand idle (no chasing, no pickups)
+        const idleInput = { forward: false, backward: false, left: false, right: false, jump: false };
+        for (const opp of opponents) {
+            if (opp === inboundState?.inbounder) continue; // inbounder handled by inbound system
+            updatePlayer(opp, delta, idleInput, null, playerColliders.filter(c => c !== opp._collider), null);
+        }
     } else {
         for (const opp of opponents) {
             updateOpponentAI(opp, delta);
@@ -4624,6 +5167,14 @@ function animate() {
             updateTipOffStationaryEntity(teammates[i], delta, mark);
         }
         updateTipOffReferee(delta);
+    } else if (isInboundActive()) {
+        // During inbound: teammates stand idle
+        const idleInput = { forward: false, backward: false, left: false, right: false, jump: false };
+        for (const tm of teammates) {
+            if (tm === inboundState?.inbounder) continue; // inbounder handled by inbound system
+            updatePlayer(tm, delta, idleInput, null, playerColliders.filter(c => c !== tm._collider), null);
+        }
+        // Referee handled by inbound system
     } else {
         for (const tm of teammates) {
             updateTeammateAI(tm, delta);
@@ -4633,16 +5184,24 @@ function animate() {
     }
 
     // ── Punch collision detection ────────────────────
-    if (!tipOffActiveNow) updatePunchCollisions();
+    if (!tipOffActiveNow && !isInboundActive()) updatePunchCollisions();
 
     if (tipOffSetupNow) {
         positionBallForTipOffHold();
+    } else if (isInboundActive()) {
+        updateInboundState(delta);
     } else {
         updateBasketball(basketballData, delta, playerColliders, playerData, allPlayers);
+
+        // ── Out-of-bounds detection ──────────────────
+        if (matchLive && gameMode === 'solo' && !tipOffActiveNow && basketballData?.active
+            && !basketballData.heldByPlayer && isBallOutOfBounds(basketballData)) {
+            triggerOutOfBounds();
+        }
     }
 
     // ── Teammate & opponent catch detection ──────────
-    if (!tipOffActiveNow && basketballData?.active && !basketballData.heldByPlayer) {
+    if (!tipOffActiveNow && !isInboundActive() && basketballData?.active && !basketballData.heldByPlayer) {
         for (const tm of teammates) {
             if (tm.stunTimer > 0) continue;
             if (tm._aiSitState) continue;

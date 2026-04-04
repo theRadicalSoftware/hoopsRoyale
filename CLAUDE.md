@@ -6,7 +6,7 @@ Hoops Royale is a **street basketball game** built entirely in **Three.js** (v0.
 
 The vision: a gritty, NYC street basketball experience. Think Central Park pickup games with chain-link fences, graffiti, cracked asphalt, and city skyline all around. The game starts at a worn-down public court and will eventually progress to better courts as the player advances.
 
-## Current State (as of March 31, 2026)
+## Current State (as of April 3, 2026)
 
 **What exists:**
 - A fully built, explorable 3D environment (court, park, city)
@@ -20,7 +20,8 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - **Torus rim collision** — ball passes through open center of rim while bouncing off the metal tube; full 3D bounce normals
 - **Scoring detection** — Y-plane crossing + radial containment check detects made baskets; tracks points, makes, and attempts. Score attribution via `_lastShooterRef` on the ball — determines whether player team or opponent team gets the points.
 - **Three-point scoring** — shot value is determined from shooter release distance to rim (7.24m threshold). Release distance is captured at shot/dunk release and used by `registerMadeBasket()`.
-- **Score HUD** — top-left player score display (points + makes/attempts); top-right opponent score display (blue-tinted glassmorphism); shot feedback popup ("Bucket +2" / "OPP Dunk +2") with CSS fade
+- **Score HUD** — unified glassmorphism scoreboard used in both solo mode (centered) and free play mode (upper-left corner via `sb-corner` CSS class). Shot feedback popup ("Bucket +2" / "OPP Dunk +2") with CSS fade.
+- **Neon title text** — "HOOPS ROYALE" rendered in red neon glow style (`#ff3a2f` with layered `text-shadow`). Positioned below the scoreboard in free play (`title-under-sb` class), upper-left in solo mode.
 - **Dunk system** — multi-phase animation (approach → slam → hang → release) triggered by pressing X while airborne near rim. Works for both the player and opponents (opponent dunk is AI-triggered).
 - **Seating system** — sit on benches/bleachers (C key for player) with smooth enter/exit transitions and seated pose animation. AI players can also sit on benches to recover stamina (walking → entering → seated → exiting phases with smooth transitions and forward step on exit).
 - **Punch system** — V key throws alternating hook punches (or free-hand punch while dribbling). Fast 3-phase animation: extend (0.08s) → hold (0.04s) → retract (0.16s). Blends on top of any current arm pose.
@@ -30,15 +31,18 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - **Passing system** — Z key to pass (close auto-pass within 5m, far aimed pass with red line + power meter). Pass stance: chest-level ball hold, A/D to aim, X or Z to fire, C to cancel. Mutual exclusion with shooting stance. Opponents also pass between each other when pressured or after holding too long.
 - **Opponent system** — up to 3 AI opponents (blue jerseys `0x2266cc` with numbers: 3, 7, 24). Full AI with multi-state behavior:
   - **Ball pursuit**: chase free balls, pick up within 0.65m
-  - **Ball holding**: dribble toward player's rim, enter shooting prep when in range (1.8–9.0m), attempt dunks when very close (< 2.8m, 65% chance), pass to open teammates when pressured or held too long
+  - **Ball holding**: obstacle-aware dribble-drive with 5-candidate sampling + defender clearance scoring, enter shooting prep when in range (1.8–9.0m), attempt dunks when very close (< 2.8m, 65% chance), pass to open teammates when pressured or swarmed
   - **Shooting**: wind-up animation (0.45s), face rim, shoot with random angle (48-56°) and power (0.88-1.06x), tracks shots attempted/made
   - **Dunking**: AI-triggered multi-phase dunk (same approach → slam → hang → release as player), auto-scores, 18 stamina cost
   - **Chase**: pursue whoever has the ball — player OR teammates — with aggressive approach + random punches when close (< 1.4m)
-  - **Positioning**: when a teammate opponent has the ball, other opponents spread out near the target rim
+  - **Positioning**: slot-based off-ball spacing system (5 predefined court slots: wings, corners, top of key) replaces random wander when teammate has ball
   - **Bench recovery**: drop ball and walk to nearest bench when stamina < 22, sit with smooth transitions, leave when > 85
   - Cylinder colliders (radius 0.44) prevent walking through, 1.1m minimum approach distance
 - **Cross-team body collisions** — teammates and opponents both have dynamic colliders, synced each frame and post-move, so no team can phase through teammates or opponents.
 - **Ball awareness indicators** — floating red beacon directly over the live ball + 2K-style under-foot radar arc/arrow pointing to ball direction in player mode.
+- **Out-of-bounds / inbounding system** — NBA-compliant OOB detection with last-touch-rule possession (`_lastTouchRef` on ball), referee ball retrieval, throw-in spot calculation (nearest sideline/baseline with free-throw-line-extended restriction), and forced pass-in mechanic. Four-phase state machine: ref_retrieve → ref_deliver → handoff → passing. All players freeze during inbound. Player uses Z key to pass in when they are the inbounder.
+- **Ball last-touch tracking** — `_lastTouchRef` property on ball tracks which player last touched the ball (set on pickup, shoot, pass, catch, body collision, and punch-forced drop). Used by the OOB system to determine possession.
+- **NBA-style tip-off positioning** — player and opponent directly across from each other at center court (X=0, Z=±0.9), referee to the side (X=1.5, Z=0). Ball held and tossed at dead center (0, y, 0).
 - Collision system for both player and ball against environment objects (benches, trash cans, bleachers, fence posts, hoop poles, backboards)
 - Dribble-time collision release (ball bounces off objects while being dribbled and escapes player control)
 - Three camera modes: Orbit, Free Roam, and Drop In (player control with camera-relative movement)
@@ -49,7 +53,7 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - Eight UI buttons: Orbit Cam, Free Roam, Drop In, Ball Drop, Panels toggle, Day/Night toggle, Add Teammate (red), Add Opponent (blue)
 
 **What does NOT exist yet:**
-- Game rules, game modes (1v1, H-O-R-S-E, etc.)
+- Full game rules / game modes (1v1, H-O-R-S-E, etc.) — OOB/inbounding is implemented but structured scoring targets/possession flow/check-ball are not
 - Sound/audio
 - Multiplayer
 - Court progression system
@@ -57,7 +61,7 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - Jump shots / running shots (shooting only while stationary for player; opponents shoot from standing)
 - Ball stealing (opponents can only get the ball via pickup after drop, punch-forced drop, or catching passes)
 
-The project is at the **competitive gameplay stage**. Both teams can score with three-point detection, both teams have competitive AI, and body collisions/ball awareness indicators are in place. The next major milestone is **steal mechanic + sound + rules/modes + AI polish**.
+The project is at the **rules & AI refinement stage**. Both teams have competitive AI with intelligent drive/pass/shoot decisions, OOB/inbounding is implemented, and the scoreboard/HUD system is unified across game modes. The next major milestone is **steal mechanic + sound + structured game modes**.
 
 ---
 
@@ -97,19 +101,19 @@ The `package.json` exists solely to set `"type": "module"` so that `node --check
 
 ```
 Hoops-Royale/
-├── index.html          # Entry point, UI buttons, HUD elements, CSS, importmap (~591 lines)
+├── index.html          # Entry point, UI buttons, HUD elements, CSS, importmap (~851 lines)
 ├── package.json        # Just { "type": "module" } for node --check
 ├── CLAUDE.md           # This file
 ├── .gitignore
 └── js/
-    ├── main.js         # Scene setup, camera, controls, day/night, gameplay state machines, AI, indicators, stamina, animation loop (~3850 lines)
+    ├── main.js         # Scene setup, camera, controls, day/night, gameplay state machines, AI, OOB/inbounding, indicators, stamina, animation loop (~5288 lines)
     ├── court.js        # Basketball court surface, lines, paint, graffiti (~672 lines)
     ├── hoops.js        # Hoop assemblies (poles, backboards, rims, chain nets) (~479 lines)
     ├── park.js         # Fencing, trees, benches, bleachers, lamps, paths, seat data (~1195 lines)
     ├── city.js         # Buildings, streets, sidewalks, cars, street props (~707 lines)
     ├── lighting.js     # All scene lights (sun, ambient, hemi, fill, rim, lampposts, moon) (~86 lines)
     ├── player.js       # Player model, joints, walk/jump/idle/carry/shoot/dunk/sit/punch/stun animation, collision, stamina arc (~1184 lines)
-    └── ball.js         # Basketball creation, physics, dribbling, pickup, shooting, passing, torus rim collision (~1160 lines)
+    └── ball.js         # Basketball creation, physics, dribbling, pickup, shooting, passing, torus rim collision, last-touch tracking (~1169 lines)
 ```
 
 ### Module Dependency Graph
@@ -123,7 +127,7 @@ index.html
         ├── js/city.js       → createCity(scene)
         ├── js/lighting.js   → createLighting(scene)
         ├── js/player.js     → createPlayer(scene, options), updatePlayer(pd, delta, input, movementBasis, colliders, carryState), getPunchFistPosition(pd), applyStun(pd, dirX, dirZ), updateStaminaBar(pd, camera), PUNCH_HIT_RADIUS
-        └── js/ball.js       → createBasketball(scene), dropBasketballAtCenter(ball), tryPickUpBasketball(ball, playerData), updateBasketball(ball, delta, colliders, playerData, allPlayers), shootBasketball(ball, playerData, angleDeg, powerMult), passBallToTarget(ball, from, targetPos, type), tryTeammateCatch(ball, tmData), forceDropBall(ball, hitDirX, hitDirZ)
+        └── js/ball.js       → createBasketball(scene), dropBasketballAtCenter(ball), tryPickUpBasketball(ball, playerData), updateBasketball(ball, delta, colliders, playerData, allPlayers), shootBasketball(ball, playerData, angleDeg, powerMult), passBallToTarget(ball, from, targetPos, type), tryTeammateCatch(ball, tmData), forceDropBall(ball, hitDirX, hitDirZ, puncher)
 ```
 
 Every environment module exports a single factory function that creates a `THREE.Group`, populates it, adds it to `scene`, and returns it. `hoops.js` and `park.js` also populate `scene.userData` with collider arrays. `player.js` and `ball.js` export additional update/interaction functions.
@@ -132,7 +136,7 @@ Every environment module exports a single factory function that creates a `THREE
 
 ## Detailed File Guide
 
-### `main.js` (~3850 lines) — The Brain
+### `main.js` (~5288 lines) — The Brain
 
 This is the orchestrator. It owns the renderer, scene, camera, controls, all gameplay state machines, teammate/opponent AI, stamina system, and the animation loop.
 
@@ -157,16 +161,16 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 14. **Seating system**: `findNearestSeat()` checks proximity to `parkSeats`. `startSittingOnSeat(seat)` / `startStandingFromSeat()` initiate smoothStep-interpolated enter/exit transitions. `updateSeating(delta)` handles phase progression (enter → sit → exit).
 15. **Ball Drop**: `dropBall()` function exposed to `window` for the UI button, calls `dropBasketballAtCenter()`
 16. **Teammate system**: `addTeammate()` creates parameterized players (red jerseys with canvas-drawn numbers) and attaches cylinder colliders. `updateTeammateAI(tm, delta)` now mirrors opponent-style competitive behavior: free-ball pursuit/pickup, dribble-drive to the correct rim (-Z), shooting windup/release, dunk attempts, pressure-based passing to player/teammates, defensive chase/punch, off-ball positioning, and bench recovery.
-17. **Passing system**: Z key triggers pass. Close teammates (< 5m) get instant auto-pass (`'chest'` type). Far teammates enter pass stance: ball held at chest level (`_passingStance` flag), A/D rotation to aim, red line visualization, power meter shared with shooting. X or Z fires aimed pass, C cancels. Mutual exclusion with shooting stance. Opponents also pass between each other via `findOpenOpponentForPass(fromOpp)` when pressured (enemy within 2.5m) or after holding > 4s.
+17. **Passing system**: Z key triggers pass. Close teammates (< 5m) get instant auto-pass (`'chest'` type). Far teammates enter pass stance: ball held at chest level (`_passingStance` flag), A/D rotation to aim, red line visualization, power meter shared with shooting. X or Z fires aimed pass, C cancels. Mutual exclusion with shooting stance. Opponents also pass between each other via `findOpenOpponentForPass(fromOpp)` when pressured (enemy within 2.8m) or swarmed (2+ defenders), or after holding > 3.5s. Pass lane detection uses perpendicular distance from pass vector to defenders (1.5m lane width, 4x penalty).
 18. **Opponent system**: `addOpponent()` creates blue-jersey players with cylinder colliders (radius 0.44) added to `playerColliders`. `updateOpponentAI(opp, delta)` handles comprehensive multi-state AI:
     - **Dunk check** (top priority): if `opp._dunkState` is active, run `updateOppDunk()` and skip normal AI
     - **Stun check**: if stunned, skip AI, just physics/animation
     - **Bench sitting**: if `opp._aiSitState` is active, run AI sitting phases (walking → entering → seated → exiting)
-    - **Ball holding**: dribble toward rim, attempt dunk (< 2.8m, 65% chance), enter shoot prep (1.8–9.0m), pass when pressured, low stamina → drop ball and seek bench
+    - **Ball holding**: obstacle-aware dribble-drive with 5-candidate sampling (varies 2–8m from rim, scores by defender clearance), stale timeout 1.8s (0.5s when swarmed). Attempt dunk (< 2.8m, 65% chance), enter shoot prep (1.8–9.0m), pass when pressured (2.8m radius) or swarmed (2+ enemies, 0.12s threshold), max hold 3.5s → pass. Low stamina → drop ball and seek bench.
     - **Ball free**: pursue ball, attempt pickup within 0.65m
     - **Enemy has ball**: chase whoever holds ball (player OR teammate), punch when close (< 1.4m, ~1.2% chance/frame)
-    - **Teammate has ball**: position near target rim for passes
-    - **Default**: wander court with random pauses
+    - **Teammate has ball**: slot-based off-ball positioning (5 court slots: wings, corners, top of key, 2% update chance per frame) replaces random offset wander
+    - **Default**: wander court with random pauses, constrained to court boundaries (opponents biased toward +Z half, teammates toward -Z half)
     - Each opponent filters its own collider during `updatePlayer` to prevent self-collision
 19. **Opponent shooting AI**: `opp._shootPrep` flag enters wind-up phase (0.45s). Opponent faces rim, then shoots with random angle (48-56°) and power (0.88-1.06x). Shot attempts/makes tracked in `oppShotsAttempted`/`oppShotsMade`. Shooting stance uses `carryState.shooting = true` for overhead arm pose.
 20. **Opponent dunk system**: `findOppDunkRim(opp, targetRimZ)` finds nearby rim. `startOppDunk(opp, rim)` initiates multi-phase dunk on `opp._dunkState` (same approach → slam → hang → release as player dunk). Opponent gets jump boost (velocityY = 7.5), auto-scores on slam, ball released with downward velocity. Costs 18 stamina. Punching mid-dunk cancels it and drops ball.
@@ -174,7 +178,11 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 22. **AI sitting system**: `findNearestSeatForAI(pd)` finds closest unoccupied bench. `updateAISitting(pd, delta)` manages 4 phases: walking (approach bench, threshold 1.6m), entering (smooth lerp to seated position using `SIT_ROOT_OFFSET`, 0.3s), seated (recover stamina, leave when > 85), exiting (stand + step forward in seat facing direction, 0.45s). Empty collider arrays passed during enter/seated/exit to prevent bench AABB from fighting the position lerps.
 23. **Stamina visuals**: `createPlayer` now includes an under-foot thin stamina arc (track + yellow fill line). `updateStaminaBar(pd, camera)` in `player.js` is retained for call-site compatibility but now updates this foot arc draw-range/opacity; legacy overhead bar is hidden at runtime. User still has a left-side HUD stamina bar.
 24. **Ball locator indicators**: `createBallLocatorIndicators()` builds two cues in `main.js`: a floating red beacon directly above the ball and a 2K-style under-foot radar arc/arrow in player mode that points toward ball direction and uses jersey/team coloring.
-25. **Punch collision detection**: `updatePunchCollisions()` runs every frame. For each player with an active punch (blend > 0.5), checks fist world position against all other players' torso regions. On hit: `applyStun()` on target, `forceDropBall()` if holding ball, cancel stances/dunks if applicable. One hit per punch swing via `_punchHitLanded` flag.
+25. **Punch collision detection**: `updatePunchCollisions()` runs every frame. For each player with an active punch (blend > 0.5), checks fist world position against all other players' torso regions. On hit: `applyStun()` on target, `forceDropBall()` if holding ball (with puncher passed for last-touch tracking), cancel stances/dunks if applicable. One hit per punch swing via `_punchHitLanded` flag.
+26. **Out-of-bounds / inbounding system**: `isBallOutOfBounds(ball)` checks if ball XZ exceeds court boundaries + margin (0.15m). `computeInboundSpot(ballPos)` calculates NBA-compliant throw-in position (nearest sideline/baseline, with free-throw-line-extended restriction at `OOB_FT_EXTENDED_Z = 8.535`). `determineInboundTeam(ball)` uses `_lastTouchRef` for last-touch-rule possession. `triggerOutOfBounds()` freezes the ball, cancels all stances, and starts the 4-phase state machine. `updateInboundState(delta)` manages: `ref_retrieve` (referee walks to ball), `ref_deliver` (referee walks to throw-in spot), `handoff` (inbounder walks to spot, receives ball from ref), `passing` (inbounder must pass in — AI auto-passes, player uses Z key). `executeInboundPass()` fires a chest pass to nearest teammate, then `finalizeInbound()` clears state and sends ref to sideline. All AI stands idle during inbound, punch collisions disabled, OOB detection paused.
+27. **Ball last-touch tracking**: `basketballData._lastTouchRef` is set on every ball interaction: pickup, shoot, pass release, catch, body collision bounce, and punch-forced drop (puncher credited). Used exclusively by the OOB system to award possession to the team that did NOT last touch the ball.
+28. **AI intelligence improvements**: Obstacle-aware drive target selection (5 candidates scored by defender clearance), swarm detection (`nearbyEnemyCount` ≥ 2 triggers faster pass decisions), pass lane detection (perpendicular distance from pass vector to defenders with 1.5m lane width and 4x penalty), slot-based off-ball positioning (5 predefined court slots replace random offset wander), and court-constrained wander (opponents biased +Z, teammates biased -Z).
+29. **Tip-off layout**: `SOLO_TIPOFF_LAYOUT` positions player at (0, y, 0.9) facing -Z and contest opponent at (0, y, -0.9) facing +Z (directly across at center court). Referee at (1.5, y, 0) to the side (not behind benches). Ball held and tossed from dead center (0, y, 0) between jumpers. Referee exits to (-8.8, y, -3.0) on the blacktop after toss.
 
 **Important global state:**
 - `lightingGroup` — reference to the lighting group, traversed during day/night updates
@@ -209,6 +217,7 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 - `passingStance` — true when player is in aimed pass mode; mutual exclusion with `shootingStance`
 - `passTargetTeammate` — reference to the teammate being passed to
 - `passQueued` — set true on Z keypress when holding ball with teammates present
+- `inboundState` — OOB inbounding state machine object (null when not active); contains `phase`, `team`, `spot`, `inbounder`, `target`, `refWalking`, `passTimer`
 
 **Exposed to window (for HTML button onclick):**
 - `window.switchCameraMode(mode)`
@@ -248,6 +257,16 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 - Pass stance and shooting stance are mutually exclusive — cannot enter one while in the other
 - Pass fire check runs BEFORE pass entry check to prevent `passQueued` from being cleared prematurely
 
+**Inbound state machine** (in animate loop, when `inboundState !== null`):
+- Triggered by `triggerOutOfBounds()` when ball exits court boundaries
+- Ball is frozen in place, all stances cancelled, referee activated
+- Phase `ref_retrieve`: referee walks to ball at `OOB_REF_SPEED` (2.2 m/s), picks up within `OOB_REF_PICKUP_DIST` (0.6m)
+- Phase `ref_deliver`: referee carries ball to computed throw-in spot
+- Phase `handoff`: inbounder walks to spot at `OOB_INBOUNDER_SPEED` (2.8 m/s), ref hands ball off within `OOB_HANDOFF_DIST` (1.2m)
+- Phase `passing`: inbounder holds ball at spot, must pass in. AI auto-passes to nearest open teammate. Player presses Z. Timeout at `OOB_PASS_TIMEOUT` (6.0s) → cancelled, ball dropped at spot.
+- During inbound: all AI stands idle facing ball, player input blocked (except Z for inbound pass), punch collisions disabled, OOB detection paused
+- After pass: `finalizeInbound()` clears state, referee walks to sideline position
+
 **Opponent AI state machine** (per opponent, every frame — priority order):
 1. If `_dunkState` active → run `updateOppDunk()`, skip all other AI. If stunned mid-dunk → cancel dunk, force drop ball.
 2. If stunned → skip AI, just run physics/animation with no input. Cancel sitting state.
@@ -256,12 +275,12 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
    - Low stamina (< 22) → force drop ball, seek bench
    - Very close to rim (< 2.8m) + enough stamina → attempt dunk (65% chance) via `startOppDunk()`
    - In shooting range (1.8–9.0m) + not pressured + held > 0.5s → enter `_shootPrep` (face rim, 0.45s wind-up, then shoot)
-   - Pressured (enemy < 2.5m) + held > 0.3s, or held > 4.0s → pass to open teammate via `findOpenOpponentForPass()`
-   - Otherwise → dribble toward drive target (aimed at shooting range). Target resets when reached (< 1.0m).
+   - Pressured (enemy < 2.8m) + held > 0.3s, or swarmed (2+ enemies) + held > 0.12s, or held > 3.5s → pass to open teammate via `findOpenOpponentForPass()` (with lane detection + openness weighting)
+   - Otherwise → obstacle-aware dribble toward drive target (5-candidate sampling, 2–8m from rim, scored by defender clearance). Target resets when reached (< 1.0m) or stale (1.8s, 0.5s when swarmed).
 5. If ball is free → pursue ball, attempt pickup when within 0.65m
 6. If enemy holds ball (player OR teammate) → chase aggressively, punch when close (< 1.4m, ~1.2% chance/frame)
-7. If teammate opponent has ball → position near target rim for receiving passes
-8. Default → wander court with random pauses (0.8–2.0s). Low stamina → seek bench.
+7. If teammate opponent has ball → slot-based off-ball positioning (5 court slots: wings, corners, top of key; 2% update chance per frame)
+8. Default → wander court (constrained to court bounds, opponents biased +Z half, teammates biased -Z half) with random pauses (0.8–2.0s). Low stamina → seek bench.
 - Each opponent filters its own collider from `playerColliders` during `updatePlayer` to avoid self-collision
 
 **Camera-relative movement** (in player mode): Each frame, `camera.getWorldDirection()` is projected onto the XZ plane and normalized to create a forward vector. The right vector is the cross product with world up. These are passed to `updatePlayer()` as `movementBasis` so WASD/arrow keys move relative to the camera's facing direction, not world axes.
@@ -502,7 +521,8 @@ The most complex gameplay module. Handles ball creation, physics simulation, env
     _ignorePlayerTimer: 0,   // countdown for ignore window
     _shootingStance: false,  // held overhead for shooting
     _passingStance: false,   // held at chest for passing
-    _lastShooterRef: null    // playerData of last player to shoot/dunk (for score attribution)
+    _lastShooterRef: null,   // playerData of last player to shoot/dunk (for score attribution)
+    _lastTouchRef: null      // playerData of last player to touch ball (for OOB possession)
 }
 ```
 
@@ -614,9 +634,10 @@ The most complex gameplay module. Handles ball creation, physics simulation, env
 - Catches within 0.65m radius at chest height (0.3–2.0m above ground)
 - Skips if `_ignorePlayerRef === teammateData` (prevents self-catch after throwing)
 
-**Force drop** (`forceDropBall(ball, hitDirX, hitDirZ)`):
+**Force drop** (`forceDropBall(ball, hitDirX, hitDirZ, puncher = null)`):
 - Called when holder is punched — releases ball via `releaseHeldBall`
 - Ball pops up (velocity.y = 3.0) and pushes away in hit direction (2.5 m/s)
+- Optional `puncher` parameter sets `_lastTouchRef` on the ball for OOB possession tracking
 
 ### Stamina Constants (in `main.js`)
 
@@ -650,18 +671,33 @@ The most complex gameplay module. Handles ball creation, physics simulation, env
 | `OPP_PICKUP_RADIUS` | 0.65m | Distance to attempt ball pickup |
 | `OPPONENT_COLLIDER_RADIUS` | 0.44m | Cylinder collider radius for opponents |
 
-### `index.html` (~591 lines) — Entry Point
+### Out-of-Bounds / Inbound Constants (in `main.js`)
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `OOB_HALF_WIDTH` | 7.62m | Half court width for OOB detection |
+| `OOB_HALF_LENGTH` | 14.325m | Half court length for OOB detection |
+| `OOB_FT_EXTENDED_Z` | 8.535m | Free-throw-line-extended Z for baseline throw-in restriction |
+| `OOB_MARGIN` | 0.15m | Extra margin beyond court edge before OOB triggers |
+| `OOB_SIDELINE_INSET` | 0.5m | Inbounder stands this far inside sideline |
+| `OOB_REF_SPEED` | 2.2 m/s | Referee walk speed to retrieve ball |
+| `OOB_INBOUNDER_SPEED` | 2.8 m/s | Inbounder walk speed to throw-in spot |
+| `OOB_REF_PICKUP_DIST` | 0.6m | Distance for ref to pick up ball |
+| `OOB_HANDOFF_DIST` | 1.2m | Distance for ref to hand ball to inbounder |
+| `OOB_PASS_TIMEOUT` | 6.0s | Max time for inbounder to pass before cancellation |
+| `OOB_SETTLE_DELAY` | 0.4s | Brief delay after OOB before triggering inbound |
+
+### `index.html` (~851 lines) — Entry Point
 
 - Loading screen with animated progress bar
 - **Start menu overlay**: glassmorphism panel with "Click To Begin" button, title, and eyebrow text
-- HUD overlay with game title
-- **Score HUD** (top-left): Player score value + makes/attempts detail, with `hud-hidden` CSS class toggle
-- **Opponent Score HUD** (top-right): Opponent score value + makes/attempts, blue-tinted glassmorphism style
-- **Stamina HUD** (left side, below score): Vertical bar with gradient fill (green → yellow → red), percentage label. Glassmorphism style.
-- **Shot feedback popup** (center): "Bucket +2" / "OPP Dunk +2" / "Total N" text with CSS opacity/transform transitions
+- **Neon title text**: "HOOPS ROYALE" in `#ff3a2f` with layered text-shadow glow (7px inner, 18px mid, 40px outer). Appears below scoreboard in free play (`title-under-sb` class at `top: 78px`), upper-left in solo mode.
+- **Unified scoreboard** (`#solo-scoreboard`): Glassmorphism panel showing both team scores + makes/attempts. Centered by default (solo mode), moves to upper-left corner via `sb-corner` CSS class (free play mode, `left: 20px; top: 16px; transform: none`).
+- **Stamina HUD** (left side, below score): Vertical bar with gradient fill (green → yellow → red), percentage label. Glassmorphism style. Hidden in free play mode.
+- **Shot feedback popup** (center): "Bucket +2" / "OPP Dunk +2" / "OUT OF BOUNDS" / "Total N" text with CSS opacity/transform transitions
 - **Power meter** (right side): Vertical bar with track, sweet spot zone, animated marker, and value label. Styled with gradient background, border radius, and backdrop blur
 - 8 UI buttons: Orbit Cam, Free Roam, Drop In, Ball Drop, Panels toggle, Day/Night toggle, Add Teammate (red), Add Opponent (blue)
-- Controls hint text at bottom (updates per camera mode, mentions Z pass, V punch)
+- Controls hint text at bottom (updates per camera mode and inbound state, mentions Z pass, V punch, Z to pass in during inbound)
 - CSS: dark theme, minimal UI, backdrop blur on buttons, `hud-hidden` utility class for fade in/out
 - Import map pointing to Three.js CDN (v0.162.0)
 
@@ -752,7 +788,7 @@ Everything is in meters with Y up. Court center is at world origin (0, 0, 0).
 4. **No boundary constraints on player** — can walk beyond the court, outside the fence (through gate openings), and into the city.
 5. **Dribble only while grounded** — ball returns to chest hold if player jumps while dribbling. No mid-air dribble or ball release.
 6. **Shooting only while stationary** — player must be standing still and grounded to enter shooting stance. No jump shots or running shots yet.
-7. **main.js is very large** (~3850 lines) — gameplay systems (scoring, dunking, seating, stamina, power meter, teammate/opponent AI, indicators, passing) should be extracted into separate modules. This is still the biggest technical debt.
+7. **main.js is very large** (~5288 lines) — gameplay systems (scoring, dunking, seating, stamina, power meter, teammate/opponent AI, indicators, passing, OOB/inbounding) should be extracted into separate modules. This is the biggest and most pressing technical debt.
 8. **Dynamic collider array allocation** — `updateOpponentAI` / `updateTeammateAI` build filtered collider arrays each frame. Could be optimized with reusable scratch arrays.
 9. **Duplicate dunk code** — player dunk (`findDunkRim`/`startDunk`/`updateDunk`) and opponent/teammate dunk (`findOppDunkRim`/`startOppDunk`/`startTeammateDunk`/`updateOppDunk`) still have substantial duplication.
 10. **No ball stealing mechanic** — defenders still gain possession via pickup, punch-forced drop, or catch only. No reach-in steal/interception input/state yet.
@@ -762,25 +798,25 @@ Everything is in meters with Y up. Court center is at world origin (0, 0, 0).
 
 ## Where We Left Off / Next Steps
 
-As of **March 31, 2026**, the Claude handoff goals and follow-up polish in this session are complete:
-- Three-point scoring is implemented (release-distance based, 7.24m threshold)
-- Teammates now run full competitive AI (shoot/dunk/pass/defend/position/recover)
-- Teammate colliders are implemented and synchronized; no cross-team walk-through
-- Dynamic collider sync in `updatePlayer` reduces stale-collider overlap issues
-- Ball awareness indicators were added (red ball beacon + 2K-style under-foot radar arc/arrow)
-- Radar now uses jersey/team color and is oriented with pointer direction
-- Stamina visuals were moved from overhead bars to under-foot thin yellow stamina arcs
+As of **April 3, 2026**, the session delivered OOB/inbounding, AI intelligence overhaul, tip-off repositioning, and unified scoreboard/HUD:
+- NBA-compliant out-of-bounds system with last-touch-rule, referee retrieval, throw-in spot calculation, and forced pass-in mechanic
+- Ball `_lastTouchRef` tracking across all interactions (pickup, shoot, pass, catch, body collision, punch)
+- AI intelligence overhaul: obstacle-aware drive targets (5-candidate sampling), swarm detection, pass lane detection (1.5m width, 4x penalty), slot-based off-ball positioning (5 court slots), court-constrained wander
+- Tip-off repositioned: player/opponent directly across at center (X=0), referee to the side (X=1.5), ball held/tossed from dead center
+- Unified glassmorphism scoreboard across solo + free play (corner variant via CSS class)
+- Neon red "HOOPS ROYALE" title styling with layered text-shadow glow
+- Stamina HUD hidden in free play mode
 
 ### Immediate next steps
 1. **Ball stealing mechanic** — add reach-in steals/interception logic (input + AI usage + possession transitions).
 2. **Sound pass** — bounce, swish, rim/chain, punch impact, ambient park/city loop.
-3. **Rules/modes layer** — possession flow, check-ball, scoring targets, and structured 1v1/3v3 modes.
-4. **AI polish** — off-ball spacing, help defense, and decision weighting tuning (pass vs shoot vs drive).
+3. **Structured game modes** — possession flow, check-ball, scoring targets, and 1v1/3v3 rulesets (OOB/inbounding is now in place as a foundation).
+4. **AI polish** — help defense, smarter shot selection (open vs contested), and transition play.
 5. **Indicator/stamina UX tuning** — optional size/opacity controls and clearer layering at steep camera angles.
 
 ### Medium-term
 6. **Shot type expansion** — jumpers/layups/runners and movement-contingent shot choices.
-7. **`main.js` refactor** — split AI/scoring/indicator/stamina systems into focused modules.
+7. **`main.js` refactor** — split AI/scoring/indicator/stamina/OOB systems into focused modules (~5288 lines is critically large).
 8. **Net interaction polish** — stronger ball/net reaction cues and richer feedback.
 9. **Player customization** — jersey/accessory options and visual identity layer.
 
