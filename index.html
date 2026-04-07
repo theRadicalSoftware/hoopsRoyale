@@ -707,6 +707,907 @@
             min-width: 66px;
             text-align: center;
         }
+
+        /* ── Multiplayer: Nickname Prompt ────────────────── */
+        #nickname-prompt {
+            position: fixed;
+            inset: 0;
+            z-index: 950;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(4, 8, 20, 0.72);
+            backdrop-filter: blur(12px);
+        }
+        #nickname-prompt.active { display: flex; }
+        .nickname-box {
+            width: min(92vw, 380px);
+            padding: 36px 32px 30px;
+            border-radius: 18px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background:
+                linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)),
+                linear-gradient(135deg, rgba(20, 34, 73, 0.60), rgba(12, 22, 48, 0.50));
+            backdrop-filter: blur(20px) saturate(130%);
+            box-shadow:
+                0 24px 56px rgba(0, 0, 0, 0.36),
+                inset 0 1px 0 rgba(255, 255, 255, 0.18);
+            text-align: center;
+            color: #f5f7ff;
+        }
+        .nickname-box h2 {
+            font-size: 1.1rem;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            font-weight: 800;
+            margin-bottom: 6px;
+        }
+        .nickname-box p {
+            font-size: 0.62rem;
+            letter-spacing: 0.12em;
+            color: rgba(232, 237, 255, 0.52);
+            margin-bottom: 22px;
+        }
+        .nickname-box input {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.20);
+            background: rgba(10, 18, 42, 0.60);
+            color: #fff;
+            font-size: 0.82rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-align: center;
+            outline: none;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+            font-family: inherit;
+        }
+        .nickname-box input:focus {
+            border-color: rgba(255, 122, 61, 0.55);
+            box-shadow: 0 0 18px rgba(255, 122, 61, 0.15);
+        }
+        .nickname-box input::placeholder {
+            color: rgba(200, 210, 240, 0.32);
+            font-weight: 500;
+        }
+        .nickname-box .nn-btn {
+            display: inline-block;
+            margin-top: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            border-radius: 999px;
+            padding: 11px 32px;
+            font-size: 0.64rem;
+            font-weight: 700;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: #fff;
+            background: linear-gradient(90deg, rgba(255, 121, 58, 0.88), rgba(255, 163, 57, 0.84));
+            box-shadow: 0 10px 24px rgba(255, 124, 60, 0.24);
+            cursor: pointer;
+            transition: filter 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+            font-family: inherit;
+        }
+        .nickname-box .nn-btn:hover {
+            filter: brightness(1.08);
+            box-shadow: 0 12px 28px rgba(255, 124, 60, 0.34);
+            transform: translateY(-1px);
+        }
+        .nickname-box .nn-btn:active {
+            transform: translateY(0);
+            transition-duration: 0.06s;
+        }
+
+        /* ── Multiplayer: Lobby Menu ────────────────────── */
+        #mp-lobby {
+            position: fixed;
+            inset: 0;
+            z-index: 910;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background:
+                radial-gradient(1200px 620px at 70% 10%, rgba(255, 140, 60, 0.08), transparent 62%),
+                radial-gradient(1000px 640px at 18% 84%, rgba(90, 150, 255, 0.08), transparent 62%),
+                linear-gradient(135deg, rgba(8, 16, 40, 0.72), rgba(12, 24, 52, 0.62));
+            transition: opacity 0.5s ease;
+        }
+        #mp-lobby.active { display: flex; }
+        #mp-lobby.fade-out { opacity: 0; pointer-events: none; }
+        .mp-lobby-inner {
+            width: min(96vw, 920px);
+            text-align: center;
+            color: #f5f7ff;
+        }
+        .mp-lobby-header {
+            margin-bottom: 28px;
+        }
+        .mp-lobby-header .mp-eyebrow {
+            font-size: 0.58rem;
+            letter-spacing: 0.44em;
+            text-transform: uppercase;
+            color: rgba(245, 248, 255, 0.44);
+            margin-bottom: 10px;
+        }
+        .mp-lobby-header .mp-title {
+            font-size: clamp(1.6rem, 5vw, 2.6rem);
+            letter-spacing: 0.28em;
+            text-transform: uppercase;
+            font-weight: 800;
+            line-height: 1;
+            margin-bottom: 10px;
+        }
+        .mp-lobby-header .mp-title span { color: #ff7a3d; }
+        .mp-lobby-header .mp-status {
+            font-size: 0.6rem;
+            letter-spacing: 0.16em;
+            color: rgba(100, 220, 140, 0.80);
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+        }
+        .mp-lobby-header .mp-status .status-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: rgba(100, 220, 140, 0.90);
+            box-shadow: 0 0 6px rgba(100, 220, 140, 0.5);
+            animation: livePulse 2s ease-in-out infinite;
+        }
+        .mp-lobby-tabs {
+            display: flex;
+            gap: 14px;
+            justify-content: center;
+            margin-bottom: 24px;
+        }
+        .mp-tab {
+            padding: 8px 22px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            background: rgba(16, 24, 48, 0.50);
+            color: rgba(220, 228, 255, 0.62);
+            font-size: 0.58rem;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+        .mp-tab:hover {
+            border-color: rgba(255, 255, 255, 0.24);
+            color: rgba(235, 240, 255, 0.82);
+        }
+        .mp-tab.active {
+            border-color: rgba(255, 122, 61, 0.50);
+            background: rgba(255, 122, 61, 0.14);
+            color: rgba(255, 200, 170, 0.95);
+        }
+        .mp-panel {
+            display: none;
+            min-height: 320px;
+        }
+        .mp-panel.active { display: block; }
+
+        /* Quick Match — room list */
+        .room-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 340px;
+            overflow-y: auto;
+            padding-right: 6px;
+        }
+        .room-list::-webkit-scrollbar { width: 4px; }
+        .room-list::-webkit-scrollbar-track { background: transparent; }
+        .room-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 2px; }
+        .room-card {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 14px 18px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            background: linear-gradient(160deg, rgba(18, 28, 56, 0.50), rgba(12, 20, 44, 0.40));
+            text-align: left;
+            transition: border-color 0.2s ease, transform 0.15s ease;
+        }
+        .room-card:hover {
+            border-color: rgba(255, 122, 61, 0.32);
+            transform: translateY(-1px);
+        }
+        .room-card-info {
+            flex: 1;
+        }
+        .room-card-name {
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            color: rgba(240, 244, 255, 0.92);
+            margin-bottom: 3px;
+        }
+        .room-card-meta {
+            font-size: 0.54rem;
+            letter-spacing: 0.1em;
+            color: rgba(200, 210, 240, 0.52);
+        }
+        .room-card-players {
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            color: rgba(255, 200, 170, 0.80);
+            white-space: nowrap;
+        }
+        .room-card-join {
+            padding: 7px 18px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            background: linear-gradient(90deg, rgba(255, 121, 58, 0.82), rgba(255, 163, 57, 0.78));
+            color: #fff;
+            font-size: 0.54rem;
+            font-weight: 700;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: filter 0.15s ease;
+            font-family: inherit;
+        }
+        .room-card-join:hover { filter: brightness(1.1); }
+        .room-list-empty {
+            padding: 60px 20px;
+            color: rgba(200, 210, 240, 0.38);
+            font-size: 0.72rem;
+            letter-spacing: 0.14em;
+        }
+        .room-list-refresh {
+            display: inline-block;
+            margin-top: 16px;
+            padding: 7px 20px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background: rgba(20, 32, 60, 0.50);
+            color: rgba(220, 228, 255, 0.68);
+            font-size: 0.54rem;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: border-color 0.2s ease, color 0.2s ease;
+            font-family: inherit;
+        }
+        .room-list-refresh:hover {
+            border-color: rgba(255, 255, 255, 0.28);
+            color: rgba(240, 244, 255, 0.88);
+        }
+
+        /* Create Match panel */
+        .create-match-form {
+            max-width: 400px;
+            margin: 0 auto;
+            text-align: left;
+        }
+        .cm-field {
+            margin-bottom: 18px;
+        }
+        .cm-label {
+            display: block;
+            font-size: 0.54rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: rgba(218, 228, 255, 0.58);
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .cm-input {
+            width: 100%;
+            padding: 11px 14px;
+            border-radius: 9px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background: rgba(10, 18, 42, 0.55);
+            color: #fff;
+            font-size: 0.76rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            outline: none;
+            transition: border-color 0.2s ease;
+            font-family: inherit;
+        }
+        .cm-input:focus {
+            border-color: rgba(255, 122, 61, 0.45);
+        }
+        .cm-input::placeholder {
+            color: rgba(200, 210, 240, 0.28);
+            font-weight: 500;
+        }
+        .cm-toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .cm-toggle-label {
+            font-size: 0.64rem;
+            letter-spacing: 0.1em;
+            color: rgba(232, 237, 255, 0.72);
+            font-weight: 600;
+        }
+        .cm-toggle {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            background: rgba(20, 30, 60, 0.60);
+            cursor: pointer;
+            transition: background 0.2s ease, border-color 0.2s ease;
+        }
+        .cm-toggle.on {
+            background: rgba(255, 122, 61, 0.36);
+            border-color: rgba(255, 122, 61, 0.50);
+        }
+        .cm-toggle::after {
+            content: '';
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: rgba(200, 210, 240, 0.70);
+            transition: transform 0.2s ease, background 0.2s ease;
+        }
+        .cm-toggle.on::after {
+            transform: translateX(20px);
+            background: rgba(255, 180, 140, 0.95);
+        }
+        .cm-score-options {
+            display: flex;
+            gap: 8px;
+        }
+        .cm-score-btn {
+            flex: 1;
+            padding: 9px 0;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            background: rgba(16, 24, 48, 0.45);
+            color: rgba(220, 228, 255, 0.60);
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-family: inherit;
+        }
+        .cm-score-btn:hover {
+            border-color: rgba(255, 255, 255, 0.24);
+            color: rgba(240, 244, 255, 0.82);
+        }
+        .cm-score-btn.active {
+            border-color: rgba(255, 122, 61, 0.50);
+            background: rgba(255, 122, 61, 0.16);
+            color: rgba(255, 200, 170, 0.95);
+        }
+        .cm-submit {
+            display: block;
+            width: 100%;
+            margin-top: 24px;
+            padding: 13px 0;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            background: linear-gradient(90deg, rgba(255, 121, 58, 0.88), rgba(255, 163, 57, 0.84));
+            box-shadow: 0 10px 24px rgba(255, 124, 60, 0.24);
+            color: #fff;
+            font-size: 0.66rem;
+            font-weight: 700;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: filter 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+            font-family: inherit;
+        }
+        .cm-submit:hover {
+            filter: brightness(1.08);
+            box-shadow: 0 12px 28px rgba(255, 124, 60, 0.34);
+            transform: translateY(-1px);
+        }
+
+        /* Pickup panel */
+        .pickup-panel {
+            max-width: 440px;
+            margin: 0 auto;
+            text-align: center;
+        }
+        .pickup-court-status {
+            padding: 24px 20px;
+            border-radius: 14px;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            background: linear-gradient(160deg, rgba(18, 28, 56, 0.50), rgba(12, 20, 44, 0.40));
+            margin-bottom: 20px;
+        }
+        .pickup-court-label {
+            font-size: 0.52rem;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: rgba(218, 228, 255, 0.48);
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .pickup-court-info {
+            font-size: 0.84rem;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            color: rgba(240, 244, 255, 0.82);
+            margin-bottom: 6px;
+        }
+        .pickup-queue-count {
+            font-size: 0.58rem;
+            letter-spacing: 0.14em;
+            color: rgba(200, 210, 240, 0.52);
+        }
+        .pickup-join-btn {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 14px 40px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            background: linear-gradient(90deg, rgba(255, 121, 58, 0.88), rgba(255, 163, 57, 0.84));
+            box-shadow: 0 10px 24px rgba(255, 124, 60, 0.24);
+            color: #fff;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: filter 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease;
+            font-family: inherit;
+        }
+        .pickup-join-btn:hover {
+            filter: brightness(1.08);
+            box-shadow: 0 12px 28px rgba(255, 124, 60, 0.34);
+            transform: translateY(-1px);
+        }
+        .pickup-queue-pos {
+            display: none;
+            margin-top: 20px;
+            padding: 16px 20px;
+            border-radius: 12px;
+            border: 1px solid rgba(100, 220, 140, 0.20);
+            background: rgba(100, 220, 140, 0.06);
+        }
+        .pickup-queue-pos.active { display: block; }
+        .pickup-queue-pos-label {
+            font-size: 0.52rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            color: rgba(100, 220, 140, 0.62);
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+        .pickup-queue-pos-num {
+            font-size: 1.4rem;
+            font-weight: 800;
+            color: rgba(100, 220, 140, 0.88);
+            letter-spacing: 0.06em;
+        }
+        .pickup-leave-btn {
+            display: inline-block;
+            margin-top: 14px;
+            padding: 7px 20px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 100, 100, 0.28);
+            background: rgba(255, 80, 80, 0.12);
+            color: rgba(255, 150, 150, 0.82);
+            font-size: 0.54rem;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-family: inherit;
+        }
+        .pickup-leave-btn:hover {
+            border-color: rgba(255, 100, 100, 0.42);
+            background: rgba(255, 80, 80, 0.18);
+        }
+        .mp-back-btn {
+            display: inline-block;
+            margin-top: 24px;
+            padding: 8px 22px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            background: rgba(20, 30, 56, 0.45);
+            color: rgba(200, 210, 240, 0.60);
+            font-size: 0.54rem;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-family: inherit;
+        }
+        .mp-back-btn:hover {
+            border-color: rgba(255, 255, 255, 0.24);
+            color: rgba(240, 244, 255, 0.82);
+        }
+
+        /* ── Multiplayer: Waiting Room ──────────────────── */
+        #mp-waiting-room {
+            position: fixed;
+            inset: 0;
+            z-index: 920;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background:
+                radial-gradient(900px 500px at 50% 20%, rgba(255, 140, 60, 0.06), transparent 62%),
+                linear-gradient(135deg, rgba(8, 16, 40, 0.78), rgba(12, 24, 52, 0.68));
+            backdrop-filter: blur(6px);
+            transition: opacity 0.5s ease;
+        }
+        #mp-waiting-room.active { display: flex; }
+        #mp-waiting-room.fade-out { opacity: 0; pointer-events: none; }
+        .wr-inner {
+            width: min(96vw, 640px);
+            color: #f5f7ff;
+        }
+        .wr-code-section {
+            text-align: center;
+            margin-bottom: 24px;
+        }
+        .wr-code-label {
+            font-size: 0.52rem;
+            letter-spacing: 0.28em;
+            text-transform: uppercase;
+            color: rgba(218, 228, 255, 0.48);
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .wr-code-box {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 22px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 122, 61, 0.30);
+            background: rgba(255, 122, 61, 0.08);
+        }
+        .wr-code-value {
+            font-size: 1.6rem;
+            font-weight: 800;
+            letter-spacing: 0.32em;
+            color: rgba(255, 200, 170, 0.95);
+            font-family: 'Courier New', monospace;
+        }
+        .wr-code-copy {
+            padding: 5px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            background: rgba(255, 255, 255, 0.06);
+            color: rgba(220, 228, 255, 0.68);
+            font-size: 0.52rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-family: inherit;
+        }
+        .wr-code-copy:hover {
+            background: rgba(255, 255, 255, 0.12);
+            color: rgba(240, 244, 255, 0.90);
+        }
+        .wr-room-name {
+            margin-top: 8px;
+            font-size: 0.6rem;
+            letter-spacing: 0.14em;
+            color: rgba(200, 210, 240, 0.46);
+        }
+        .wr-teams {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .wr-team {
+            flex: 1;
+            padding: 16px 14px;
+            border-radius: 14px;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            background: linear-gradient(160deg, rgba(18, 28, 56, 0.50), rgba(12, 20, 44, 0.40));
+        }
+        .wr-team-label {
+            font-size: 0.50rem;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            font-weight: 700;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .wr-team.home .wr-team-label { color: rgba(255, 160, 120, 0.72); }
+        .wr-team.away .wr-team-label { color: rgba(130, 175, 255, 0.72); }
+        .wr-slot {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 10px;
+            border-radius: 8px;
+            margin-bottom: 4px;
+            transition: background 0.15s ease;
+        }
+        .wr-slot-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.58rem;
+            font-weight: 800;
+        }
+        .wr-team.home .wr-slot-icon {
+            background: rgba(204, 34, 34, 0.28);
+            border: 1px solid rgba(204, 34, 34, 0.36);
+            color: rgba(255, 160, 120, 0.88);
+        }
+        .wr-team.away .wr-slot-icon {
+            background: rgba(34, 102, 204, 0.28);
+            border: 1px solid rgba(34, 102, 204, 0.36);
+            color: rgba(130, 175, 255, 0.88);
+        }
+        .wr-slot-name {
+            flex: 1;
+            font-size: 0.66rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            color: rgba(232, 237, 255, 0.82);
+        }
+        .wr-slot-host {
+            font-size: 0.44rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: rgba(255, 200, 100, 0.60);
+            font-weight: 700;
+        }
+        .wr-slot-ready {
+            font-size: 0.52rem;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+        }
+        .wr-slot-ready.is-ready { color: rgba(100, 220, 140, 0.82); }
+        .wr-slot-ready.not-ready { color: rgba(255, 255, 255, 0.22); }
+        .wr-slot.empty .wr-slot-name {
+            color: rgba(200, 210, 240, 0.26);
+            font-style: italic;
+        }
+        .wr-slot.empty .wr-slot-icon {
+            opacity: 0.3;
+        }
+        .wr-actions {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+        .wr-btn {
+            padding: 10px 22px;
+            border-radius: 999px;
+            font-size: 0.58rem;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-family: inherit;
+        }
+        .wr-btn-switch {
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            background: rgba(20, 30, 56, 0.50);
+            color: rgba(220, 228, 255, 0.72);
+        }
+        .wr-btn-switch:hover {
+            border-color: rgba(255, 255, 255, 0.28);
+            color: rgba(240, 244, 255, 0.90);
+        }
+        .wr-btn-ready {
+            border: 1px solid rgba(100, 220, 140, 0.30);
+            background: rgba(100, 220, 140, 0.12);
+            color: rgba(100, 220, 140, 0.82);
+        }
+        .wr-btn-ready:hover {
+            background: rgba(100, 220, 140, 0.18);
+        }
+        .wr-btn-ready.is-ready {
+            border-color: rgba(255, 160, 80, 0.30);
+            background: rgba(255, 160, 80, 0.12);
+            color: rgba(255, 180, 120, 0.82);
+        }
+        .wr-btn-start {
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            background: linear-gradient(90deg, rgba(255, 121, 58, 0.88), rgba(255, 163, 57, 0.84));
+            box-shadow: 0 8px 20px rgba(255, 124, 60, 0.22);
+            color: #fff;
+        }
+        .wr-btn-start:hover {
+            filter: brightness(1.08);
+            box-shadow: 0 10px 24px rgba(255, 124, 60, 0.32);
+            transform: translateY(-1px);
+        }
+        .wr-btn-start:disabled {
+            opacity: 0.4;
+            cursor: default;
+            filter: none;
+            transform: none;
+        }
+        .wr-btn-leave {
+            border: 1px solid rgba(255, 100, 100, 0.24);
+            background: rgba(255, 80, 80, 0.10);
+            color: rgba(255, 150, 150, 0.72);
+        }
+        .wr-btn-leave:hover {
+            background: rgba(255, 80, 80, 0.16);
+        }
+        .wr-chat {
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(8, 14, 32, 0.45);
+            overflow: hidden;
+        }
+        .wr-chat-log {
+            height: 110px;
+            overflow-y: auto;
+            padding: 10px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .wr-chat-log::-webkit-scrollbar { width: 3px; }
+        .wr-chat-log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 2px; }
+        .wr-chat-msg {
+            font-size: 0.58rem;
+            letter-spacing: 0.06em;
+            color: rgba(220, 228, 255, 0.62);
+            text-align: left;
+        }
+        .wr-chat-msg .chat-name {
+            font-weight: 700;
+            color: rgba(255, 200, 170, 0.82);
+        }
+        .wr-chat-msg.system-msg {
+            color: rgba(200, 210, 240, 0.36);
+            font-style: italic;
+        }
+        .wr-chat-input-row {
+            display: flex;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .wr-chat-input {
+            flex: 1;
+            padding: 9px 14px;
+            border: none;
+            background: transparent;
+            color: rgba(232, 237, 255, 0.82);
+            font-size: 0.6rem;
+            letter-spacing: 0.06em;
+            outline: none;
+            font-family: inherit;
+        }
+        .wr-chat-input::placeholder {
+            color: rgba(200, 210, 240, 0.24);
+        }
+        .wr-chat-send {
+            padding: 9px 16px;
+            border: none;
+            background: rgba(255, 122, 61, 0.22);
+            color: rgba(255, 180, 140, 0.78);
+            font-size: 0.54rem;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.15s ease;
+            font-family: inherit;
+        }
+        .wr-chat-send:hover {
+            background: rgba(255, 122, 61, 0.32);
+        }
+
+        /* ── Connection Status Indicator ────────────────── */
+        #mp-connection-status {
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            z-index: 930;
+            display: none;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            background: rgba(10, 18, 36, 0.55);
+            backdrop-filter: blur(6px);
+            font-size: 0.50rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: rgba(200, 210, 240, 0.58);
+            pointer-events: none;
+        }
+        #mp-connection-status.active { display: flex; }
+        .conn-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: rgba(100, 220, 140, 0.88);
+            box-shadow: 0 0 5px rgba(100, 220, 140, 0.4);
+        }
+        .conn-dot.disconnected {
+            background: rgba(255, 100, 100, 0.88);
+            box-shadow: 0 0 5px rgba(255, 100, 100, 0.4);
+        }
+
+        /* ── Multiplayer: Join Code Input ───────────────── */
+        .qm-join-code {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            margin-bottom: 18px;
+        }
+        .qm-join-input {
+            width: 160px;
+            padding: 9px 14px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            background: rgba(10, 18, 42, 0.55);
+            color: #fff;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.28em;
+            text-align: center;
+            text-transform: uppercase;
+            outline: none;
+            font-family: 'Courier New', monospace;
+            transition: border-color 0.2s ease;
+        }
+        .qm-join-input:focus {
+            border-color: rgba(255, 122, 61, 0.45);
+        }
+        .qm-join-input::placeholder {
+            color: rgba(200, 210, 240, 0.28);
+            font-weight: 500;
+            letter-spacing: 0.16em;
+        }
+        .qm-join-go {
+            padding: 9px 18px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            background: linear-gradient(90deg, rgba(255, 121, 58, 0.82), rgba(255, 163, 57, 0.78));
+            color: #fff;
+            font-size: 0.58rem;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: filter 0.15s ease;
+            font-family: inherit;
+        }
+        .qm-join-go:hover { filter: brightness(1.1); }
+        .qm-divider {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .qm-divider::before, .qm-divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.08);
+        }
+        .qm-divider span {
+            font-size: 0.50rem;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: rgba(200, 210, 240, 0.32);
+            font-weight: 700;
+        }
     </style>
 </head>
 <body>
@@ -723,11 +1624,11 @@
                     <div class="mode-card-desc">You + 2 AI teammates vs 3 opponents</div>
                     <div class="mode-card-btn">Run It</div>
                 </div>
-                <div class="mode-card mode-card-locked">
+                <div class="mode-card mode-card-solo" onclick="startOnline()">
                     <div class="mode-card-format">Multiplayer</div>
                     <div class="mode-card-title">Online</div>
-                    <div class="mode-card-desc">Find a pickup game</div>
-                    <div class="mode-card-soon">Coming Soon</div>
+                    <div class="mode-card-desc">Quick match, custom rooms, or pickup</div>
+                    <div class="mode-card-btn">Connect</div>
                 </div>
                 <div class="mode-card mode-card-solo" onclick="startFreePlay()">
                     <div class="mode-card-format">Sandbox</div>
@@ -748,6 +1649,149 @@
                 <span class="mode-select-key">V</span><span class="mode-select-action">Punch</span>
             </div>
         </div>
+    </div>
+
+    <!-- Nickname Prompt -->
+    <div id="nickname-prompt">
+        <div class="nickname-box">
+            <h2>Enter Your Name</h2>
+            <p>This is how other players will see you on the court</p>
+            <input type="text" id="nickname-input" maxlength="20" placeholder="Your name..." autocomplete="off" spellcheck="false">
+            <button class="nn-btn" id="nickname-go">Let's Go</button>
+        </div>
+    </div>
+
+    <!-- Multiplayer Lobby Menu -->
+    <div id="mp-lobby">
+        <div class="mp-lobby-inner">
+            <div class="mp-lobby-header">
+                <div class="mp-eyebrow">Multiplayer</div>
+                <div class="mp-title"><span>Hoops</span> Royale</div>
+                <div class="mp-status">
+                    <span class="status-dot"></span>
+                    <span id="mp-status-text">Connected</span>
+                </div>
+            </div>
+
+            <div class="mp-lobby-tabs">
+                <button class="mp-tab active" data-tab="quick-match">Quick Match</button>
+                <button class="mp-tab" data-tab="create-match">Create Match</button>
+                <button class="mp-tab" data-tab="pickup">Pickup</button>
+            </div>
+
+            <!-- Quick Match Panel -->
+            <div class="mp-panel active" id="panel-quick-match">
+                <div class="qm-join-code">
+                    <input type="text" class="qm-join-input" id="qm-join-code-input" maxlength="6" placeholder="CODE" autocomplete="off" spellcheck="false">
+                    <button class="qm-join-go" id="qm-join-go">Join</button>
+                </div>
+                <div class="qm-divider"><span>or browse open courts</span></div>
+                <div class="room-list" id="room-list">
+                    <div class="room-list-empty">No open courts right now</div>
+                </div>
+                <button class="room-list-refresh" id="room-list-refresh">Refresh</button>
+            </div>
+
+            <!-- Create Match Panel -->
+            <div class="mp-panel" id="panel-create-match">
+                <div class="create-match-form">
+                    <div class="cm-field">
+                        <label class="cm-label">Room Name</label>
+                        <input type="text" class="cm-input" id="cm-room-name" maxlength="30" placeholder="My Court" autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="cm-field">
+                        <div class="cm-toggle-row">
+                            <span class="cm-toggle-label">Public Room</span>
+                            <div class="cm-toggle on" id="cm-public-toggle"></div>
+                        </div>
+                    </div>
+                    <div class="cm-field">
+                        <label class="cm-label">Score Target</label>
+                        <div class="cm-score-options">
+                            <button class="cm-score-btn" data-score="11">11</button>
+                            <button class="cm-score-btn" data-score="15">15</button>
+                            <button class="cm-score-btn active" data-score="21">21</button>
+                        </div>
+                    </div>
+                    <button class="cm-submit" id="cm-create-btn">Create Court</button>
+                </div>
+            </div>
+
+            <!-- Pickup Panel -->
+            <div class="mp-panel" id="panel-pickup">
+                <div class="pickup-panel">
+                    <div class="pickup-court-status">
+                        <div class="pickup-court-label">Current Court</div>
+                        <div class="pickup-court-info" id="pickup-court-info">Waiting for players</div>
+                        <div class="pickup-queue-count" id="pickup-queue-count">0 in line</div>
+                    </div>
+                    <button class="pickup-join-btn" id="pickup-join-btn">Got Next</button>
+                    <div class="pickup-queue-pos" id="pickup-queue-pos">
+                        <div class="pickup-queue-pos-label">Your Position</div>
+                        <div class="pickup-queue-pos-num" id="pickup-queue-pos-num">#1</div>
+                        <button class="pickup-leave-btn" id="pickup-leave-btn">Leave Queue</button>
+                    </div>
+                </div>
+            </div>
+
+            <button class="mp-back-btn" id="mp-back-btn">Back</button>
+        </div>
+    </div>
+
+    <!-- Multiplayer Waiting Room -->
+    <div id="mp-waiting-room">
+        <div class="wr-inner">
+            <div class="wr-code-section">
+                <div class="wr-code-label">Room Code</div>
+                <div class="wr-code-box">
+                    <span class="wr-code-value" id="wr-code-value">------</span>
+                    <button class="wr-code-copy" id="wr-code-copy">Copy</button>
+                </div>
+                <div class="wr-room-name" id="wr-room-name"></div>
+            </div>
+
+            <div class="wr-teams">
+                <div class="wr-team home">
+                    <div class="wr-team-label">Home</div>
+                    <div id="wr-home-slots">
+                        <div class="wr-slot empty"><div class="wr-slot-icon">1</div><div class="wr-slot-name">Open</div></div>
+                        <div class="wr-slot empty"><div class="wr-slot-icon">2</div><div class="wr-slot-name">Open</div></div>
+                        <div class="wr-slot empty"><div class="wr-slot-icon">3</div><div class="wr-slot-name">Open</div></div>
+                    </div>
+                </div>
+                <div class="wr-team away">
+                    <div class="wr-team-label">Away</div>
+                    <div id="wr-away-slots">
+                        <div class="wr-slot empty"><div class="wr-slot-icon">1</div><div class="wr-slot-name">Open</div></div>
+                        <div class="wr-slot empty"><div class="wr-slot-icon">2</div><div class="wr-slot-name">Open</div></div>
+                        <div class="wr-slot empty"><div class="wr-slot-icon">3</div><div class="wr-slot-name">Open</div></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="wr-actions">
+                <button class="wr-btn wr-btn-switch" id="wr-switch-team">Switch Team</button>
+                <button class="wr-btn wr-btn-ready" id="wr-ready-btn">Ready</button>
+                <button class="wr-btn wr-btn-start" id="wr-start-btn" style="display:none;">Tip Off</button>
+                <button class="wr-btn wr-btn-leave" id="wr-leave-btn">Leave</button>
+            </div>
+
+            <div class="wr-chat">
+                <div class="wr-chat-log" id="wr-chat-log">
+                    <div class="wr-chat-msg system-msg">Welcome to the court.</div>
+                </div>
+                <div class="wr-chat-input-row">
+                    <input type="text" class="wr-chat-input" id="wr-chat-input" maxlength="200" placeholder="Type a message..." autocomplete="off" spellcheck="false">
+                    <button class="wr-chat-send" id="wr-chat-send">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Connection Status Indicator -->
+    <div id="mp-connection-status">
+        <span class="conn-dot"></span>
+        <span id="conn-ping">--ms</span>
     </div>
 
     <!-- HUD -->
