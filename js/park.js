@@ -2,6 +2,10 @@ import * as THREE from 'three';
 
 const COURT_WIDTH = 15.24;
 const COURT_LENGTH = 28.65;
+const FENCE_PAD_X = 4.5;
+const FENCE_PAD_Z = 6.0;
+const FENCE_HALF_W = COURT_WIDTH / 2 + FENCE_PAD_X;
+const FENCE_HALF_L = COURT_LENGTH / 2 + FENCE_PAD_Z;
 
 export function createPark(scene) {
     const parkGroup = new THREE.Group();
@@ -15,6 +19,7 @@ export function createPark(scene) {
     createTrashCans(parkGroup, parkColliders);
     createLampPosts(parkGroup);
     createPathways(parkGroup);
+    createPerimeterPlantingBeds(parkGroup);
     createBleachers(parkGroup, parkColliders, parkSeats);
     createDrinkingFountain(parkGroup);
     createScatteredDetails(parkGroup);
@@ -30,10 +35,8 @@ export function createPark(scene) {
 // behind each basketball hoop.
 function createFencing(group, colliders) {
     const fenceHeight = 3.0;
-    const padX = 4.5;
-    const padZ = 6.0;
-    const halfW = COURT_WIDTH / 2 + padX;
-    const halfL = COURT_LENGTH / 2 + padZ;
+    const halfW = FENCE_HALF_W;
+    const halfL = FENCE_HALF_L;
     const gateWidth = 2.8;
     const panelThickness = 0.06;
     const panelEndPad = 0.05;
@@ -345,7 +348,7 @@ function createChainLinkTexture() {
 // ─── Trees ──────────────────────────────────────────────────
 function createTrees(group) {
     const treePositions = [
-        // Surrounding the court at various distances
+        // Immediate park perimeter (outside fence)
         [-18, 15], [-22, 5], [-20, -8], [-16, -18],
         [18, 12], [22, -3], [19, -15], [16, 20],
         [-25, 22], [25, -20], [-12, 28], [12, -28],
@@ -359,153 +362,225 @@ function createTrees(group) {
         [-50, 0], [50, 5], [-20, 45], [20, -45],
     ];
 
-    for (const [x, z] of treePositions) {
-        const dist = Math.sqrt(x * x + z * z);
-        const scale = 0.7 + Math.random() * 0.6;
-        const treeType = Math.random();
+    // Fill out the skyline edge with a ring of additional trees.
+    for (let i = 0; i < 18; i++) {
+        const angle = (i / 18) * Math.PI * 2;
+        const radius = 44 + stableNoise2D(Math.cos(angle) * 9, Math.sin(angle) * 9, 2.6) * 9;
+        const x = Math.cos(angle) * radius;
+        const z = Math.sin(angle) * radius;
+        treePositions.push([x, z]);
+    }
 
-        if (treeType < 0.5) {
-            createDeciduousTree(group, x, z, scale);
-        } else if (treeType < 0.8) {
-            createOakTree(group, x, z, scale);
+    const palette = createTreePalette();
+
+    for (const [x, z] of treePositions) {
+        if (!isOutsideFenceArea(x, z, 1.2)) continue;
+
+        const scale = 0.75 + stableNoise2D(x, z, 5.1) * 0.7;
+        const treeTypeRoll = stableNoise2D(x, z, 11.7);
+
+        if (treeTypeRoll < 0.45) {
+            createDeciduousTree(group, x, z, scale, palette);
+        } else if (treeTypeRoll < 0.8) {
+            createOakTree(group, x, z, scale, palette);
         } else {
-            createPineTree(group, x, z, scale);
+            createPineTree(group, x, z, scale, palette);
         }
     }
 }
 
-function createDeciduousTree(group, x, z, scale) {
-    const trunkHeight = (3 + Math.random() * 2) * scale;
-    const trunkMat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(0.25 + Math.random() * 0.1, 0.15 + Math.random() * 0.05, 0.08),
-        roughness: 0.95,
-        metalness: 0.0
-    });
-
-    // Trunk
-    const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.1 * scale, 0.18 * scale, trunkHeight, 8),
-        trunkMat
-    );
-    trunk.position.set(x, trunkHeight / 2, z);
-    trunk.castShadow = true;
-    group.add(trunk);
-
-    // Canopy (multiple overlapping spheres for organic look)
-    const leafColor = new THREE.Color(
-        0.1 + Math.random() * 0.1,
-        0.35 + Math.random() * 0.25,
-        0.08 + Math.random() * 0.1
-    );
-    const leafMat = new THREE.MeshStandardMaterial({
-        color: leafColor,
-        roughness: 0.9,
-        metalness: 0.0
-    });
-
-    const canopyY = trunkHeight + 0.5 * scale;
-    const canopyRadius = (1.8 + Math.random() * 1.2) * scale;
-
-    // Main canopy mass
-    for (let i = 0; i < 5; i++) {
-        const r = canopyRadius * (0.5 + Math.random() * 0.5);
-        const offsetX = (Math.random() - 0.5) * canopyRadius * 0.6;
-        const offsetY = (Math.random() - 0.3) * canopyRadius * 0.4;
-        const offsetZ = (Math.random() - 0.5) * canopyRadius * 0.6;
-        const sphere = new THREE.Mesh(
-            new THREE.SphereGeometry(r, 8, 8),
-            leafMat
-        );
-        sphere.position.set(x + offsetX, canopyY + offsetY, z + offsetZ);
-        sphere.castShadow = true;
-        sphere.receiveShadow = true;
-        sphere.userData.isLeaves = true;
-        sphere.userData.leafSway = 0.5 + Math.random() * 1.5;
-        group.add(sphere);
-    }
+function createTreePalette() {
+    return {
+        trunkMats: [
+            new THREE.MeshStandardMaterial({ color: 0x4f3724, roughness: 0.95, metalness: 0.01 }),
+            new THREE.MeshStandardMaterial({ color: 0x5a3d28, roughness: 0.95, metalness: 0.01 }),
+            new THREE.MeshStandardMaterial({ color: 0x46301f, roughness: 0.96, metalness: 0.0 }),
+        ],
+        branchMat: new THREE.MeshStandardMaterial({ color: 0x4b331f, roughness: 0.95, metalness: 0.0 }),
+        mulchMat: new THREE.MeshStandardMaterial({ color: 0x3a2c1e, roughness: 0.95, metalness: 0.0 }),
+        deciduousLeafMats: [
+            new THREE.MeshStandardMaterial({ color: 0x6dbf67, roughness: 0.88, metalness: 0.0 }),
+            new THREE.MeshStandardMaterial({ color: 0x79c977, roughness: 0.88, metalness: 0.0 }),
+            new THREE.MeshStandardMaterial({ color: 0x5ea95a, roughness: 0.9, metalness: 0.0 }),
+        ],
+        oakLeafMats: [
+            new THREE.MeshStandardMaterial({ color: 0x5ca95b, roughness: 0.9, metalness: 0.0 }),
+            new THREE.MeshStandardMaterial({ color: 0x4f9850, roughness: 0.91, metalness: 0.0 }),
+            new THREE.MeshStandardMaterial({ color: 0x74b86f, roughness: 0.9, metalness: 0.0 }),
+        ],
+        pineLeafMats: [
+            new THREE.MeshStandardMaterial({ color: 0x3d7a45, roughness: 0.9, metalness: 0.0 }),
+            new THREE.MeshStandardMaterial({ color: 0x2f6a3d, roughness: 0.9, metalness: 0.0 }),
+            new THREE.MeshStandardMaterial({ color: 0x4b8753, roughness: 0.89, metalness: 0.0 }),
+        ],
+        trunkGeo: new THREE.CylinderGeometry(0.1, 0.18, 1, 8),
+        oakTrunkGeo: new THREE.CylinderGeometry(0.12, 0.23, 1, 8),
+        pineTrunkGeo: new THREE.CylinderGeometry(0.08, 0.14, 1, 7),
+        branchGeo: new THREE.CylinderGeometry(0.035, 0.06, 1, 6),
+        canopySphereGeo: new THREE.SphereGeometry(1, 8, 7),
+        canopyChunkGeo: new THREE.IcosahedronGeometry(1, 0),
+        pineTierGeo: new THREE.ConeGeometry(1, 1, 8),
+        mulchGeo: new THREE.CylinderGeometry(1.0, 1.1, 0.05, 10),
+    };
 }
 
-function createOakTree(group, x, z, scale) {
-    const trunkHeight = (4 + Math.random() * 3) * scale;
-    const trunkMat = new THREE.MeshStandardMaterial({
-        color: 0x4a3728,
-        roughness: 0.95
-    });
+function createDeciduousTree(group, x, z, scale, palette) {
+    const trunkHeight = (3.2 + stableNoise2D(x, z, 1.3) * 1.8) * scale;
+    const trunkMat = pickDeterministic(palette.trunkMats, x, z, 0.8);
+    const leafMat = pickDeterministic(palette.deciduousLeafMats, x, z, 3.1);
 
-    const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.15 * scale, 0.25 * scale, trunkHeight, 8),
-        trunkMat
-    );
+    const trunk = new THREE.Mesh(palette.trunkGeo, trunkMat);
+    trunk.scale.set(1, trunkHeight, 1);
     trunk.position.set(x, trunkHeight / 2, z);
     trunk.castShadow = true;
+    trunk.receiveShadow = true;
     group.add(trunk);
 
-    // Broader, flatter canopy
-    const leafMat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(0.12, 0.38 + Math.random() * 0.15, 0.1),
-        roughness: 0.9
-    });
+    const branchCount = 2 + Math.floor(stableNoise2D(x, z, 4.7) * 2);
+    for (let i = 0; i < branchCount; i++) {
+        const t = i / Math.max(1, branchCount - 1);
+        const branch = new THREE.Mesh(palette.branchGeo, palette.branchMat);
+        const yaw = stableNoise2D(x + i * 2.1, z - i * 1.7, 6.2) * Math.PI * 2;
+        const pitch = 0.45 + stableNoise2D(x, z, 7.8 + i) * 0.35;
+        const length = (0.8 + stableNoise2D(x, z, 9.5 + i) * 0.45) * scale;
+        branch.scale.set(0.7, length, 0.7);
+        branch.position.set(
+            x + Math.cos(yaw) * 0.25 * scale,
+            trunkHeight * (0.55 + t * 0.18),
+            z + Math.sin(yaw) * 0.25 * scale
+        );
+        branch.rotation.set(0, yaw, pitch);
+        branch.castShadow = true;
+        group.add(branch);
+    }
 
-    const canopyY = trunkHeight;
-    const canopyRadius = (2.5 + Math.random() * 1.5) * scale;
-
-    for (let i = 0; i < 7; i++) {
-        const r = canopyRadius * (0.4 + Math.random() * 0.5);
-        const angle = Math.random() * Math.PI * 2;
-        const dist = Math.random() * canopyRadius * 0.5;
-        const sphere = new THREE.Mesh(
-            new THREE.SphereGeometry(r, 8, 6),
+    const canopyY = trunkHeight + 0.45 * scale;
+    const canopyRadius = (1.9 + stableNoise2D(x, z, 12.2) * 1.2) * scale;
+    const blobs = 6 + Math.floor(stableNoise2D(x, z, 14.1) * 2);
+    for (let i = 0; i < blobs; i++) {
+        const n = stableNoise2D(x + i * 3.1, z - i * 4.4, 15.3);
+        const angle = n * Math.PI * 2;
+        const offsetDist = canopyRadius * (0.1 + n * 0.35);
+        const blob = new THREE.Mesh(
+            i % 2 === 0 ? palette.canopySphereGeo : palette.canopyChunkGeo,
             leafMat
         );
-        sphere.scale.y = 0.6;
-        sphere.position.set(
+        const blobScale = canopyRadius * (0.42 + n * 0.28);
+        blob.scale.set(blobScale, blobScale * (0.78 + n * 0.25), blobScale);
+        blob.position.set(
+            x + Math.cos(angle) * offsetDist,
+            canopyY + (n - 0.4) * canopyRadius * 0.32,
+            z + Math.sin(angle) * offsetDist
+        );
+        blob.castShadow = true;
+        blob.receiveShadow = true;
+        blob.userData.isLeaves = true;
+        blob.userData.leafSway = 0.35 + n * 1.1;
+        group.add(blob);
+    }
+
+    const mulch = new THREE.Mesh(palette.mulchGeo, palette.mulchMat);
+    mulch.position.set(x, 0.02, z);
+    mulch.scale.set(0.8 * scale, 1, 0.8 * scale);
+    mulch.receiveShadow = true;
+    group.add(mulch);
+}
+
+function createOakTree(group, x, z, scale, palette) {
+    const trunkHeight = (3.8 + stableNoise2D(x, z, 17.6) * 2.4) * scale;
+    const trunkMat = pickDeterministic(palette.trunkMats, x, z, 19.4);
+    const leafMat = pickDeterministic(palette.oakLeafMats, x, z, 20.9);
+
+    const trunk = new THREE.Mesh(palette.oakTrunkGeo, trunkMat);
+    trunk.scale.set(1.05, trunkHeight, 1.05);
+    trunk.position.set(x, trunkHeight / 2, z);
+    trunk.castShadow = true;
+    trunk.receiveShadow = true;
+    group.add(trunk);
+
+    // Secondary trunk creates a fuller oak silhouette.
+    const trunk2 = new THREE.Mesh(palette.branchGeo, trunkMat);
+    trunk2.scale.set(1.2, 1.4 * scale, 1.2);
+    trunk2.position.set(x + 0.35 * scale, trunkHeight * 0.68, z - 0.2 * scale);
+    trunk2.rotation.set(0.18, 0.8, 0.35);
+    trunk2.castShadow = true;
+    group.add(trunk2);
+
+    const canopyY = trunkHeight + 0.2 * scale;
+    const canopyRadius = (2.4 + stableNoise2D(x, z, 23.1) * 1.3) * scale;
+    const blobs = 8 + Math.floor(stableNoise2D(x, z, 25.2) * 3);
+    for (let i = 0; i < blobs; i++) {
+        const n = stableNoise2D(x + i * 2.7, z - i * 3.2, 26.4);
+        const angle = n * Math.PI * 2;
+        const dist = canopyRadius * (0.05 + n * 0.45);
+        const blob = new THREE.Mesh(palette.canopyChunkGeo, leafMat);
+        const blobScale = canopyRadius * (0.36 + n * 0.24);
+        blob.scale.set(blobScale, blobScale * 0.62, blobScale);
+        blob.position.set(
             x + Math.cos(angle) * dist,
-            canopyY + Math.random() * canopyRadius * 0.3,
+            canopyY + (n - 0.5) * canopyRadius * 0.2,
             z + Math.sin(angle) * dist
         );
-        sphere.castShadow = true;
-        sphere.userData.isLeaves = true;
-        sphere.userData.leafSway = 0.3 + Math.random();
-        group.add(sphere);
+        blob.castShadow = true;
+        blob.userData.isLeaves = true;
+        blob.userData.leafSway = 0.25 + n * 0.9;
+        group.add(blob);
     }
+
+    const mulch = new THREE.Mesh(palette.mulchGeo, palette.mulchMat);
+    mulch.position.set(x, 0.02, z);
+    mulch.scale.set(0.92 * scale, 1, 0.92 * scale);
+    mulch.receiveShadow = true;
+    group.add(mulch);
 }
 
-function createPineTree(group, x, z, scale) {
-    const trunkHeight = (2 + Math.random()) * scale;
-    const trunkMat = new THREE.MeshStandardMaterial({
-        color: 0x3d2817,
-        roughness: 0.95
-    });
+function createPineTree(group, x, z, scale, palette) {
+    const trunkHeight = (2.2 + stableNoise2D(x, z, 29.8) * 1.3) * scale;
+    const trunkMat = pickDeterministic(palette.trunkMats, x, z, 31.6);
+    const leafMat = pickDeterministic(palette.pineLeafMats, x, z, 33.2);
 
-    const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.08 * scale, 0.14 * scale, trunkHeight, 6),
-        trunkMat
-    );
+    const trunk = new THREE.Mesh(palette.pineTrunkGeo, trunkMat);
+    trunk.scale.set(1, trunkHeight, 1);
     trunk.position.set(x, trunkHeight / 2, z);
     trunk.castShadow = true;
+    trunk.receiveShadow = true;
     group.add(trunk);
 
-    const pineMat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(0.06, 0.25 + Math.random() * 0.1, 0.08),
-        roughness: 0.85
-    });
-
-    // Tiered cone canopy
-    const tiers = 3 + Math.floor(Math.random() * 2);
+    const tiers = 3 + Math.floor(stableNoise2D(x, z, 35.4) * 2);
+    const tierHeight = (1.5 + stableNoise2D(x, z, 36.9) * 0.4) * scale;
     for (let i = 0; i < tiers; i++) {
-        const t = i / tiers;
-        const tierRadius = (2.0 - t * 1.2) * scale;
-        const tierHeight = 1.8 * scale;
-        const cone = new THREE.Mesh(
-            new THREE.ConeGeometry(tierRadius, tierHeight, 8),
-            pineMat
-        );
-        cone.position.set(x, trunkHeight + i * tierHeight * 0.55, z);
+        const t = i / Math.max(1, tiers - 1);
+        const radius = (1.9 - t * 1.15) * scale;
+        const cone = new THREE.Mesh(palette.pineTierGeo, leafMat);
+        cone.scale.set(radius, tierHeight, radius);
+        cone.position.set(x, trunkHeight + i * tierHeight * 0.53, z);
         cone.castShadow = true;
         cone.userData.isLeaves = true;
-        cone.userData.leafSway = 0.2 + Math.random() * 0.5;
+        cone.userData.leafSway = 0.18 + t * 0.3;
         group.add(cone);
     }
+
+    const topCone = new THREE.Mesh(palette.pineTierGeo, leafMat);
+    topCone.scale.set(0.45 * scale, 0.7 * scale, 0.45 * scale);
+    topCone.position.set(x, trunkHeight + tiers * tierHeight * 0.5 + 0.35 * scale, z);
+    topCone.castShadow = true;
+    topCone.userData.isLeaves = true;
+    topCone.userData.leafSway = 0.3;
+    group.add(topCone);
+}
+
+function pickDeterministic(items, x, z, seed) {
+    const idx = Math.floor(stableNoise2D(x, z, seed) * items.length) % items.length;
+    return items[idx];
+}
+
+function stableNoise2D(x, z, seed = 0) {
+    const n = Math.sin((x + seed * 11.73) * 12.9898 + (z - seed * 7.19) * 78.233) * 43758.5453;
+    return n - Math.floor(n);
+}
+
+function isOutsideFenceArea(x, z, buffer = 0) {
+    return Math.abs(x) > FENCE_HALF_W + buffer || Math.abs(z) > FENCE_HALF_L + buffer;
 }
 
 // ─── Park Benches ───────────────────────────────────────────
@@ -914,6 +989,93 @@ function createLampPosts(group) {
     }
 }
 
+// ─── Perimeter Planting Beds (outside fence) ─────────────────
+function createPerimeterPlantingBeds(group) {
+    const bedMat = new THREE.MeshStandardMaterial({
+        color: 0x456739,
+        roughness: 0.95,
+        metalness: 0.0
+    });
+    const mulchMat = new THREE.MeshStandardMaterial({
+        color: 0x5a4329,
+        roughness: 0.93,
+        metalness: 0.0
+    });
+    const shrubMats = [
+        new THREE.MeshStandardMaterial({ color: 0x6fb062, roughness: 0.88, metalness: 0.0 }),
+        new THREE.MeshStandardMaterial({ color: 0x5f9f54, roughness: 0.9, metalness: 0.0 }),
+        new THREE.MeshStandardMaterial({ color: 0x7cbf72, roughness: 0.88, metalness: 0.0 }),
+    ];
+    const flowerMats = [
+        new THREE.MeshStandardMaterial({ color: 0xffd86b, roughness: 0.75 }),
+        new THREE.MeshStandardMaterial({ color: 0xff9f7f, roughness: 0.75 }),
+        new THREE.MeshStandardMaterial({ color: 0xbfdfff, roughness: 0.75 }),
+    ];
+
+    const bedGeo = new THREE.CircleGeometry(1, 16);
+    const shrubGeo = new THREE.IcosahedronGeometry(0.38, 0);
+    const flowerGeo = new THREE.SphereGeometry(0.07, 6, 5);
+
+    const beds = [
+        { x: -31, z: -13, rx: 3.8, rz: 2.1, rot: 0.35, shrubs: 6 },
+        { x: -29, z: 16, rx: 4.0, rz: 2.3, rot: -0.15, shrubs: 6 },
+        { x: 30, z: -15, rx: 3.7, rz: 2.2, rot: 0.2, shrubs: 6 },
+        { x: 28, z: 15, rx: 3.9, rz: 2.2, rot: -0.4, shrubs: 6 },
+        { x: -8, z: -33, rx: 4.4, rz: 2.1, rot: 0.05, shrubs: 7 },
+        { x: 9, z: -33, rx: 4.2, rz: 2.0, rot: -0.15, shrubs: 7 },
+        { x: -7, z: 33, rx: 4.2, rz: 2.2, rot: -0.08, shrubs: 7 },
+        { x: 8, z: 33, rx: 4.4, rz: 2.1, rot: 0.1, shrubs: 7 },
+    ];
+
+    for (const bed of beds) {
+        if (!isOutsideFenceArea(bed.x, bed.z, 2.5)) continue;
+
+        const grassInset = new THREE.Mesh(bedGeo, bedMat);
+        grassInset.rotation.x = -Math.PI / 2;
+        grassInset.rotation.z = bed.rot;
+        grassInset.position.set(bed.x, 0.006, bed.z);
+        grassInset.scale.set(bed.rx, bed.rz, 1);
+        grassInset.receiveShadow = true;
+        group.add(grassInset);
+
+        const mulch = new THREE.Mesh(bedGeo, mulchMat);
+        mulch.rotation.x = -Math.PI / 2;
+        mulch.rotation.z = bed.rot;
+        mulch.position.set(bed.x, 0.012, bed.z);
+        mulch.scale.set(bed.rx * 0.75, bed.rz * 0.75, 1);
+        mulch.receiveShadow = true;
+        group.add(mulch);
+
+        for (let i = 0; i < bed.shrubs; i++) {
+            const n = stableNoise2D(bed.x + i * 3.7, bed.z - i * 2.9, 40.4);
+            const angle = n * Math.PI * 2;
+            const localR = 0.25 + n * 0.55;
+            const localX = Math.cos(angle) * bed.rx * localR * 0.7;
+            const localZ = Math.sin(angle) * bed.rz * localR * 0.7;
+            const px = bed.x + localX * Math.cos(bed.rot) - localZ * Math.sin(bed.rot);
+            const pz = bed.z + localX * Math.sin(bed.rot) + localZ * Math.cos(bed.rot);
+            if (!isOutsideFenceArea(px, pz, 1.5)) continue;
+
+            const shrub = new THREE.Mesh(shrubGeo, shrubMats[i % shrubMats.length]);
+            const shrubScale = 0.55 + n * 0.55;
+            shrub.scale.set(shrubScale, shrubScale * (0.85 + n * 0.3), shrubScale);
+            shrub.position.set(px, 0.28 + shrubScale * 0.08, pz);
+            shrub.castShadow = true;
+            shrub.receiveShadow = true;
+            shrub.userData.isLeaves = true;
+            shrub.userData.leafSway = 0.08 + n * 0.18;
+            group.add(shrub);
+
+            if (n > 0.62) {
+                const flower = new THREE.Mesh(flowerGeo, flowerMats[i % flowerMats.length]);
+                flower.position.set(px + (n - 0.5) * 0.25, 0.42 + n * 0.12, pz + (0.5 - n) * 0.2);
+                flower.castShadow = true;
+                group.add(flower);
+            }
+        }
+    }
+}
+
 // ─── Pathways (looping paths around the court/park) ─────────
 function createPathways(group) {
     const canvas = document.createElement('canvas');
@@ -1156,11 +1318,12 @@ function createScatteredDetails(group) {
         side: THREE.DoubleSide
     });
 
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 96; i++) {
         const angle = Math.random() * Math.PI * 2;
-        const dist = 10 + Math.random() * 40;
+        const dist = 14 + Math.random() * 42;
         const x = Math.cos(angle) * dist;
         const z = Math.sin(angle) * dist;
+        if (!isOutsideFenceArea(x, z, 1.2)) continue;
 
         const leaf = new THREE.Mesh(
             new THREE.CircleGeometry(0.05 + Math.random() * 0.08, 5),
@@ -1178,18 +1341,41 @@ function createScatteredDetails(group) {
         roughness: 0.95
     });
 
-    for (let i = 0; i < 20; i++) {
-        const x = (Math.random() - 0.5) * 25;
-        const z = (Math.random() - 0.5) * 40;
-        // Only place outside court area
-        if (Math.abs(x) > COURT_WIDTH / 2 + 2 || Math.abs(z) > COURT_LENGTH / 2 + 3) {
-            const rock = new THREE.Mesh(
-                new THREE.DodecahedronGeometry(0.05 + Math.random() * 0.1, 0),
-                rockMat
-            );
-            rock.position.set(x, 0.03, z);
-            rock.rotation.set(Math.random(), Math.random(), Math.random());
-            group.add(rock);
-        }
+    for (let i = 0; i < 34; i++) {
+        const x = (Math.random() - 0.5) * 92;
+        const z = (Math.random() - 0.5) * 92;
+        if (!isOutsideFenceArea(x, z, 1.5)) continue;
+        const rock = new THREE.Mesh(
+            new THREE.DodecahedronGeometry(0.06 + Math.random() * 0.13, 0),
+            rockMat
+        );
+        rock.position.set(x, 0.03, z);
+        rock.rotation.set(Math.random(), Math.random(), Math.random());
+        rock.castShadow = true;
+        group.add(rock);
+    }
+
+    // Small branch litter for extra ground richness around the outer park.
+    const twigMat = new THREE.MeshStandardMaterial({
+        color: 0x5a412d,
+        roughness: 0.95,
+        metalness: 0.0
+    });
+    for (let i = 0; i < 26; i++) {
+        const x = (Math.random() - 0.5) * 86;
+        const z = (Math.random() - 0.5) * 86;
+        if (!isOutsideFenceArea(x, z, 1.8)) continue;
+        const twig = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.015, 0.02, 0.35 + Math.random() * 0.35, 5),
+            twigMat
+        );
+        twig.position.set(x, 0.04, z);
+        twig.rotation.set(
+            (Math.random() - 0.5) * 0.4,
+            Math.random() * Math.PI,
+            Math.PI / 2 + (Math.random() - 0.5) * 0.6
+        );
+        twig.castShadow = true;
+        group.add(twig);
     }
 }

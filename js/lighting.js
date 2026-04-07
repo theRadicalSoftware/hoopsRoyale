@@ -31,6 +31,10 @@ export function createLighting(scene) {
     sun.shadow.normalBias = 0.03;
     sun.userData.lightRole = 'sun';
     lightGroup.add(sun);
+    const sunTarget = new THREE.Object3D();
+    sunTarget.position.set(0, 0, 0);
+    lightGroup.add(sunTarget);
+    sun.target = sunTarget;
 
     // ── Fill light ──────────────────────────────────────────
     const fill = new THREE.DirectionalLight(0xaabbdd, 0.35);
@@ -80,6 +84,10 @@ export function createLighting(scene) {
     moon.position.set(-20, 40, -15);
     moon.userData.lightRole = 'moon';
     lightGroup.add(moon);
+    const moonTarget = new THREE.Object3D();
+    moonTarget.position.set(0, 0, 0);
+    lightGroup.add(moonTarget);
+    moon.target = moonTarget;
 
     scene.add(lightGroup);
     return lightGroup;
