@@ -7,6 +7,9 @@ import { createCity } from './city.js';
 import { createLighting } from './lighting.js';
 import { createPlayer, updatePlayer, getPunchFistPosition, applyStun, updateStaminaBar, PUNCH_HIT_RADIUS } from './player.js';
 import { createBasketball, dropBasketballAtCenter, tryPickUpBasketball, updateBasketball, shootBasketball, passBallToTarget, tryTeammateCatch, forceDropBall } from './ball.js';
+import { initLobbyUI, showNicknamePrompt } from './net/lobby-ui.js';
+import { startHostSync, stopHostSync, getRemoteInput, getSlotAssignments, getSessionForSlot, broadcastAction, broadcastGameOver, isHostSyncActive } from './net/host-sync.js';
+import { startGuestSync, stopGuestSync, setLocalInput, getInterpolatedState, getLatestSnapshot, getMyPlayerIndex, isGuestSyncActive } from './net/guest-sync.js';
 
 // ─── Renderer ───────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -1344,6 +1347,216 @@ function startSoloGame() {
         switchCameraMode('player');
         setGameplayHudVisible(true);
     }, 180);
+}
+
+function startOnline() {
+    if (!startMenuActive) return;
+
+    // Hide mode select (but don't mark game as started yet — that happens on game launch)
+    const modeSelectEl = document.getElementById('mode-select');
+    if (modeSelectEl) {
+        modeSelectEl.classList.add('fade-out');
+        setTimeout(() => { modeSelectEl.style.display = 'none'; }, 650);
+    }
+
+    // Initialize lobby UI if first time, then show nickname prompt
+    if (!window._lobbyInitialized) {
+        initLobbyUI(handleMultiplayerGameStart);
+        window._lobbyInitialized = true;
+    }
+    showNicknamePrompt();
+}
+
+function handleMultiplayerGameStart(info) {
+    // info: { slotAssignments, hostId, settings, mySessionId, isHost }
+    startMenuActive = false;
+    gameStarted = true;
+    matchLive = false;
+    gameMode = 'online';
+    blockHeld = false;
+    countdownValue = COUNTDOWN_DURATION + 1;
+
+    // Store multiplayer state
+    window._mpInfo = info;
+
+    // Count how many human players are on each team
+    const assignments = info.slotAssignments;
+    let homeHumans = 0, awayHumans = 0;
+    for (const sid of Object.keys(assignments)) {
+        if (assignments[sid].team === 'home') homeHumans++;
+        else awayHumans++;
+    }
+
+    // Spawn AI to fill empty slots (3 per team, minus humans)
+    // Host always controls home slot 0 (playerData)
+    const needTeammates = Math.max(0, 3 - homeHumans);
+    const needOpponents = Math.max(0, 3 - awayHumans);
+
+    for (let i = 0; i < needTeammates; i++) addTeammate();
+    for (let i = 0; i < needOpponents; i++) addOpponent();
+
+    if (info.isHost) {
+        // Host: run game simulation locally, broadcast state
+        startHostSync({
+            slotAssignments: assignments,
+            playerData,
+            teammates,
+            opponents,
+            basketball: basketballData,
+            getScores: () => ({
+                h: totalScore, a: oppTotalScore,
+                hm: shotsMade, ha: shotsAttempted,
+                am: oppShotsMade, aa: oppShotsAttempted
+            }),
+            getGamePhase: () => matchLive ? 'playing' : 'waiting'
+        });
+
+        // Start tip-off sequence (same as solo)
+        setupSoloTipOff();
+    } else {
+        // Guest: receive state from host, send input
+        startGuestSync({
+            slotAssignments: assignments,
+            mySessionId: info.mySessionId,
+            onGameAction: handleRemoteGameAction,
+            onGameOver: handleRemoteGameOver
+        });
+    }
+
+    setTimeout(() => {
+        switchCameraMode('player');
+        setGameplayHudVisible(true);
+    }, 180);
+}
+
+function applyGuestState(delta) {
+    const state = getInterpolatedState();
+    if (!state) return;
+
+    const { players, ball, scores, gamePhase } = state;
+
+    // Apply state to entities
+    // players[0] = home slot 0 (host's playerData)
+    // players[1] = home slot 1 (teammate 0)
+    // players[2] = home slot 2 (teammate 1)
+    // players[3] = away slot 0 (opponent 0)
+    // players[4] = away slot 1 (opponent 1)
+    // players[5] = away slot 2 (opponent 2)
+
+    const myIdx = getMyPlayerIndex();
+    const entities = [playerData, teammates[0], teammates[1], opponents[0], opponents[1], opponents[2]];
+
+    for (let i = 0; i < 6; i++) {
+        const pd = entities[i];
+        const ps = players[i];
+        if (!pd || !ps) continue;
+
+        // For our own entity, use client-side prediction blend
+        if (i === myIdx) {
+            // Blend toward host-confirmed position when divergence is significant
+            const hostX = ps.p[0], hostY = ps.p[1], hostZ = ps.p[2];
+            const pos = pd.group.position;
+            const dx = hostX - pos.x, dz = hostZ - pos.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist > 0.15) {
+                // Snap blend toward host position
+                const blend = 1 - Math.exp(-6 * delta);
+                pos.x += dx * blend;
+                pos.z += dz * blend;
+            }
+            pos.y = hostY;
+            // Still apply non-position state from host
+            pd.stunTimer = ps.st;
+            pd.stunIntensity = ps.si;
+            pd.stamina = ps.sm;
+            pd.blocking = ps.bl;
+            continue;
+        }
+
+        // For all other entities: apply full state from host
+        pd.group.position.set(ps.p[0], ps.p[1], ps.p[2]);
+        pd.facingAngle = ps.fa;
+        pd.group.rotation.y = ps.fa;
+        pd.velocity.set(ps.v[0], ps.v[1] || 0, ps.v[2]);
+        pd.velocityY = ps.vy;
+        pd.isGrounded = ps.g;
+        pd.isJumping = ps.j;
+        pd.moveBlend = ps.mb;
+        pd.walkCycle = ps.wc;
+        pd.stunTimer = ps.st;
+        pd.stunIntensity = ps.si;
+        pd.punchActive = ps.pa;
+        pd.punchPhase = ps.pp;
+        pd.punchHand = ps.ph;
+        pd.blocking = ps.bl;
+        pd.stamina = ps.sm;
+
+        // Run animation only (skipPhysics)
+        const dummyInput = { forward: false, backward: false, left: false, right: false, jump: false };
+        updatePlayer(pd, delta, dummyInput, null, null, null, true);
+    }
+
+    // Apply ball state
+    if (ball && basketballData) {
+        if (ball.ac && !basketballData.active) {
+            basketballData.active = true;
+            basketballData.mesh.visible = true;
+        }
+        if (!ball.h) {
+            // Ball is free — set position from host
+            basketballData.mesh.position.set(ball.p[0], ball.p[1], ball.p[2]);
+            basketballData.velocity.set(ball.v[0], ball.v[1], ball.v[2]);
+            basketballData.heldByPlayer = false;
+            basketballData.heldByPlayerData = null;
+            basketballData.sleeping = ball.sl;
+        }
+        basketballData.dribblePhase = ball.dp;
+        basketballData._shootingStance = ball.ss;
+        basketballData._passingStance = ball.ps;
+    }
+
+    // Apply scores
+    if (scores) {
+        if (scores.h !== undefined) totalScore = scores.h;
+        if (scores.a !== undefined) oppTotalScore = scores.a;
+        if (scores.hm !== undefined) shotsMade = scores.hm;
+        if (scores.ha !== undefined) shotsAttempted = scores.ha;
+        if (scores.am !== undefined) oppShotsMade = scores.am;
+        if (scores.aa !== undefined) oppShotsAttempted = scores.aa;
+        updateScoreHUD();
+    }
+
+    // Apply game phase
+    if (gamePhase === 'playing' && !matchLive) {
+        matchLive = true;
+    }
+}
+
+function handleRemoteGameAction(action, data) {
+    // Handle discrete events from host (score updates, etc.)
+    if (action === 'score') {
+        if (data.team === 'home') {
+            totalScore = data.total || totalScore;
+            shotsMade = data.makes || shotsMade;
+            shotsAttempted = data.attempts || shotsAttempted;
+        } else {
+            oppTotalScore = data.total || oppTotalScore;
+            oppShotsMade = data.makes || oppShotsMade;
+            oppShotsAttempted = data.attempts || oppShotsAttempted;
+        }
+        updateScoreHUD();
+        showShotFeedback(data.label || 'Score', `Total ${data.total}`);
+    }
+}
+
+function handleRemoteGameOver(winner, score) {
+    matchLive = false;
+    if (score) {
+        totalScore = score.home || 0;
+        oppTotalScore = score.away || 0;
+        updateScoreHUD();
+    }
+    showShotFeedback(winner === 'home' ? 'You Win!' : 'You Lose', `${totalScore} - ${oppTotalScore}`);
 }
 
 function startFreePlay() {
@@ -5128,14 +5341,35 @@ function animate() {
         pickupQueued = false;
     }
 
+    // ── Guest state application (online mode) ────────
+    if (isGuestSyncActive()) {
+        applyGuestState(delta);
+        // Send our local input to the host
+        setLocalInput({
+            forward: playerInput.forward, backward: playerInput.backward,
+            left: playerInput.left, right: playerInput.right,
+            jump: playerInput.jump,
+            actionZ: pickupQueued || passQueued,
+            actionX: shootQueued,
+            actionC: cancelShootQueued || sitToggleQueued,
+            actionV: playerData?.punchQueued || false,
+            block: blockHeld
+        });
+    }
+
     // ── Update opponents ─────────────────────────────
     updateOpponentColliders();
     updateTeammateColliders();
+
+    // Guest clients skip local AI — state comes from host via applyGuestState()
+    const skipLocalAI = isGuestSyncActive();
     updateTipOffState(delta);
     const tipOffActiveNow = isSoloTipOffActive();
     const tipOffSetupNow = tipOffActiveNow && tipOffState?.phase === 'setup';
 
-    if (tipOffActiveNow) {
+    if (skipLocalAI) {
+        // Guest: entities already updated by applyGuestState(), just sync colliders
+    } else if (tipOffActiveNow) {
         for (let i = 0; i < opponents.length; i++) {
             const opp = opponents[i];
             if (opp === tipOffState?.contestOpponent) {
@@ -5153,7 +5387,23 @@ function animate() {
             updatePlayer(opp, delta, idleInput, null, playerColliders.filter(c => c !== opp._collider), null);
         }
     } else {
-        for (const opp of opponents) {
+        for (let i = 0; i < opponents.length; i++) {
+            const opp = opponents[i];
+            // In online host mode: check if this opponent slot is human-controlled
+            if (isHostSyncActive()) {
+                const remoteSid = getSessionForSlot('away', i);
+                if (remoteSid) {
+                    const netInput = getRemoteInput(remoteSid);
+                    if (netInput) {
+                        const input = {
+                            forward: netInput.forward, backward: netInput.backward,
+                            left: netInput.left, right: netInput.right, jump: netInput.jump
+                        };
+                        updatePlayer(opp, delta, input, null, playerColliders.filter(c => c !== opp._collider), null);
+                        continue;
+                    }
+                }
+            }
             updateOpponentAI(opp, delta);
         }
     }
@@ -5161,7 +5411,9 @@ function animate() {
     // ── Update teammates ──────────────────────────────
     const allPlayers = (teammates.length > 0 || opponents.length > 0)
         ? [playerData, ...teammates, ...opponents] : null;
-    if (tipOffActiveNow) {
+    if (skipLocalAI) {
+        // Guest: teammates already updated by applyGuestState()
+    } else if (tipOffActiveNow) {
         for (let i = 0; i < teammates.length; i++) {
             const mark = tipOffState?.teammateMarks?.[i] || SOLO_TIPOFF_LAYOUT.teammates[i] || SOLO_TIPOFF_LAYOUT.teammates[0];
             updateTipOffStationaryEntity(teammates[i], delta, mark);
@@ -5176,7 +5428,24 @@ function animate() {
         }
         // Referee handled by inbound system
     } else {
-        for (const tm of teammates) {
+        for (let i = 0; i < teammates.length; i++) {
+            const tm = teammates[i];
+            // In online host mode: check if this teammate slot is human-controlled
+            // Teammates are home slots 1 and 2 (slot 0 is the host/playerData)
+            if (isHostSyncActive()) {
+                const remoteSid = getSessionForSlot('home', i + 1);
+                if (remoteSid) {
+                    const netInput = getRemoteInput(remoteSid);
+                    if (netInput) {
+                        const input = {
+                            forward: netInput.forward, backward: netInput.backward,
+                            left: netInput.left, right: netInput.right, jump: netInput.jump
+                        };
+                        updatePlayer(tm, delta, input, null, playerColliders.filter(c => c !== tm._collider), null);
+                        continue;
+                    }
+                }
+            }
             updateTeammateAI(tm, delta);
         }
         // Referee sideline behavior (walk off court, then idle)
@@ -5184,9 +5453,11 @@ function animate() {
     }
 
     // ── Punch collision detection ────────────────────
-    if (!tipOffActiveNow && !isInboundActive()) updatePunchCollisions();
+    if (!skipLocalAI && !tipOffActiveNow && !isInboundActive()) updatePunchCollisions();
 
-    if (tipOffSetupNow) {
+    if (skipLocalAI) {
+        // Guest: ball state applied by applyGuestState(), skip local physics
+    } else if (tipOffSetupNow) {
         positionBallForTipOffHold();
     } else if (isInboundActive()) {
         updateInboundState(delta);
@@ -5194,14 +5465,14 @@ function animate() {
         updateBasketball(basketballData, delta, playerColliders, playerData, allPlayers);
 
         // ── Out-of-bounds detection ──────────────────
-        if (matchLive && gameMode === 'solo' && !tipOffActiveNow && basketballData?.active
+        if (matchLive && (gameMode === 'solo' || isHostSyncActive()) && !tipOffActiveNow && basketballData?.active
             && !basketballData.heldByPlayer && isBallOutOfBounds(basketballData)) {
             triggerOutOfBounds();
         }
     }
 
     // ── Teammate & opponent catch detection ──────────
-    if (!tipOffActiveNow && !isInboundActive() && basketballData?.active && !basketballData.heldByPlayer) {
+    if (!skipLocalAI && !tipOffActiveNow && !isInboundActive() && basketballData?.active && !basketballData.heldByPlayer) {
         for (const tm of teammates) {
             if (tm.stunTimer > 0) continue;
             if (tm._aiSitState) continue;
@@ -5280,6 +5551,7 @@ window.dropBall = dropBall;
 window.addTeammate = addTeammate;
 window.addOpponent = addOpponent;
 window.startSoloGame = startSoloGame;
+window.startOnline = startOnline;
 window.startFreePlay = startFreePlay;
 
 // ─── Start ──────────────────────────────────────────────────

@@ -412,7 +412,7 @@ export function createPlayer(scene, options = {}) {
 }
 
 // ─── Update Player (called every frame) ─────────────────────
-export function updatePlayer(pd, delta, input, movementBasis = null, colliders = null, carryState = null) {
+export function updatePlayer(pd, delta, input, movementBasis = null, colliders = null, carryState = null, skipPhysics = false) {
     const { group, joints } = pd;
     if (!group.visible) return;
 
@@ -449,82 +449,92 @@ export function updatePlayer(pd, delta, input, movementBasis = null, colliders =
 
     const isStunned = pd.stunTimer > 0;
 
-    // ── Movement direction from arrow keys ───────────────
-    const basisForward = movementBasis?.forward || WORLD_FORWARD;
-    const basisRight = movementBasis?.right || WORLD_RIGHT;
+    let isMoving = false;
 
-    tmpInputDir.set(0, 0, 0);
-    if (!isStunned) {
-        if (input.forward)  tmpInputDir.add(basisForward);
-        if (input.backward) tmpInputDir.sub(basisForward);
-        if (input.left)     tmpInputDir.sub(basisRight);
-        if (input.right)    tmpInputDir.add(basisRight);
-    }
-    tmpInputDir.y = 0;
+    if (!skipPhysics) {
+        // ── Movement direction from arrow keys ───────────────
+        const basisForward = movementBasis?.forward || WORLD_FORWARD;
+        const basisRight = movementBasis?.right || WORLD_RIGHT;
 
-    const hasMoveInput = tmpInputDir.lengthSq() > 0;
-
-    if (hasMoveInput) {
-        tmpInputDir.normalize();
-    }
-
-    // Velocity-based movement removes start/stop jitter and feels smoother.
-    tmpTargetVel.copy(tmpInputDir).multiplyScalar(WALK_SPEED * (pd.speedMultiplier ?? 1));
-
-    // Apply stun recoil — pushback in hit direction, decays with stun intensity
-    if (isStunned) {
-        const recoil = STUN_RECOIL * pd.stunIntensity;
-        tmpTargetVel.x = pd.stunDirX * recoil;
-        tmpTargetVel.z = pd.stunDirZ * recoil;
-    }
-
-    const moveResponse = hasMoveInput ? ACCELERATION : DECELERATION;
-    const velLerp = 1 - Math.exp(-(isStunned ? 8 : moveResponse) * delta);
-    pd.velocity.x += (tmpTargetVel.x - pd.velocity.x) * velLerp;
-    pd.velocity.z += (tmpTargetVel.z - pd.velocity.z) * velLerp;
-
-    group.position.x += pd.velocity.x * delta;
-    group.position.z += pd.velocity.z * delta;
-
-    const horizontalSpeed = Math.hypot(pd.velocity.x, pd.velocity.z);
-    const isMoving = horizontalSpeed > 0.08;
-
-    if (isMoving) {
-        // Smoothly rotate player to face actual movement vector.
-        const targetAngle = Math.atan2(pd.velocity.x, pd.velocity.z);
-        let diff = targetAngle - pd.facingAngle;
-        while (diff >  Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-
-        const turnLerp = 1 - Math.exp(-TURN_SPEED * delta);
-        pd.facingAngle += diff * turnLerp;
-        group.rotation.y = pd.facingAngle;
-
-        // Advance walk cycle based on true speed so animation matches movement.
-        pd.walkCycle += horizontalSpeed * delta * 3.2;
-    }
-
-    // ── Jump ─────────────────────────────────────────────
-    if (input.jump && !pd.jumpPressed && pd.isGrounded && !isStunned) {
-        pd.velocityY = JUMP_FORCE;
-        pd.isGrounded = false;
-        pd.isJumping = true;
-        pd._justJumped = true;
-    }
-    pd.jumpPressed = input.jump;
-
-    if (!pd.isGrounded) {
-        pd.velocityY += GRAVITY * delta;
-        group.position.y += pd.velocityY * delta;
-        if (group.position.y <= GROUNDED_Y) {
-            group.position.y = GROUNDED_Y;
-            pd.velocityY = 0;
-            pd.isGrounded = true;
-            pd.isJumping = false;
+        tmpInputDir.set(0, 0, 0);
+        if (!isStunned) {
+            if (input.forward)  tmpInputDir.add(basisForward);
+            if (input.backward) tmpInputDir.sub(basisForward);
+            if (input.left)     tmpInputDir.sub(basisRight);
+            if (input.right)    tmpInputDir.add(basisRight);
         }
+        tmpInputDir.y = 0;
+
+        const hasMoveInput = tmpInputDir.lengthSq() > 0;
+
+        if (hasMoveInput) {
+            tmpInputDir.normalize();
+        }
+
+        // Velocity-based movement removes start/stop jitter and feels smoother.
+        tmpTargetVel.copy(tmpInputDir).multiplyScalar(WALK_SPEED * (pd.speedMultiplier ?? 1));
+
+        // Apply stun recoil — pushback in hit direction, decays with stun intensity
+        if (isStunned) {
+            const recoil = STUN_RECOIL * pd.stunIntensity;
+            tmpTargetVel.x = pd.stunDirX * recoil;
+            tmpTargetVel.z = pd.stunDirZ * recoil;
+        }
+
+        const moveResponse = hasMoveInput ? ACCELERATION : DECELERATION;
+        const velLerp = 1 - Math.exp(-(isStunned ? 8 : moveResponse) * delta);
+        pd.velocity.x += (tmpTargetVel.x - pd.velocity.x) * velLerp;
+        pd.velocity.z += (tmpTargetVel.z - pd.velocity.z) * velLerp;
+
+        group.position.x += pd.velocity.x * delta;
+        group.position.z += pd.velocity.z * delta;
+
+        const horizontalSpeed = Math.hypot(pd.velocity.x, pd.velocity.z);
+        isMoving = horizontalSpeed > 0.08;
+
+        if (isMoving) {
+            // Smoothly rotate player to face actual movement vector.
+            const targetAngle = Math.atan2(pd.velocity.x, pd.velocity.z);
+            let diff = targetAngle - pd.facingAngle;
+            while (diff >  Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+
+            const turnLerp = 1 - Math.exp(-TURN_SPEED * delta);
+            pd.facingAngle += diff * turnLerp;
+            group.rotation.y = pd.facingAngle;
+
+            // Advance walk cycle based on true speed so animation matches movement.
+            pd.walkCycle += horizontalSpeed * delta * 3.2;
+        }
+
+        // ── Jump ─────────────────────────────────────────────
+        if (input.jump && !pd.jumpPressed && pd.isGrounded && !isStunned) {
+            pd.velocityY = JUMP_FORCE;
+            pd.isGrounded = false;
+            pd.isJumping = true;
+            pd._justJumped = true;
+        }
+        pd.jumpPressed = input.jump;
+
+        if (!pd.isGrounded) {
+            pd.velocityY += GRAVITY * delta;
+            group.position.y += pd.velocityY * delta;
+            if (group.position.y <= GROUNDED_Y) {
+                group.position.y = GROUNDED_Y;
+                pd.velocityY = 0;
+                pd.isGrounded = true;
+                pd.isJumping = false;
+            }
+        }
+
+        resolvePlayerCollisions(pd, colliders);
+    } else {
+        // skipPhysics: derive isMoving from current velocity for animation
+        const horizontalSpeed = Math.hypot(pd.velocity.x, pd.velocity.z);
+        isMoving = horizontalSpeed > 0.08;
+        group.rotation.y = pd.facingAngle;
     }
 
-    resolvePlayerCollisions(pd, colliders);
     syncDynamicPlayerCollider(pd);
 
     // ── Punch state machine ──────────────────────────────
