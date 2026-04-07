@@ -4,6 +4,61 @@ import * as THREE from 'three';
 const PARK_RADIUS = 55; // park grass extends ~100x100, city starts beyond
 const BLOCK_SIZE = 12;
 const STREET_WIDTH = 6;
+const SIDEWALK_WIDTH = 3.5;
+const CITY_OUTER_EDGE = PARK_RADIUS + 0.5;
+
+const buildingBodyMaterialCache = new Map();
+const buildingCorniceMaterialCache = new Map();
+const buildingAccentMaterialCache = new Map();
+
+const WINDOW_DARK_MAT = new THREE.MeshStandardMaterial({
+    color: 0x87a6c4,
+    emissive: 0x26384a,
+    emissiveIntensity: 0.14,
+    roughness: 0.16,
+    metalness: 0.58
+});
+const WINDOW_LIT_MAT = new THREE.MeshStandardMaterial({
+    color: 0xffe4b8,
+    emissive: 0xffcc70,
+    emissiveIntensity: 0.36,
+    roughness: 0.22,
+    metalness: 0.08
+});
+const ROOF_METAL_MAT = new THREE.MeshStandardMaterial({
+    color: 0x5f6666,
+    roughness: 0.62,
+    metalness: 0.35
+});
+const ROOF_RAIL_MAT = new THREE.MeshStandardMaterial({
+    color: 0x434343,
+    roughness: 0.4,
+    metalness: 0.75
+});
+const BILLBOARD_COOL_MAT = new THREE.MeshStandardMaterial({
+    color: 0xdfe8f4,
+    roughness: 0.7,
+    metalness: 0.08
+});
+const BILLBOARD_WARM_MAT = new THREE.MeshStandardMaterial({
+    color: 0xf3dfcc,
+    roughness: 0.7,
+    metalness: 0.08
+});
+const AWNING_MATERIALS = [
+    new THREE.MeshStandardMaterial({ color: 0xcc4a3b, roughness: 0.7 }),
+    new THREE.MeshStandardMaterial({ color: 0x3f7a4b, roughness: 0.7 }),
+    new THREE.MeshStandardMaterial({ color: 0x3d5f99, roughness: 0.7 }),
+    new THREE.MeshStandardMaterial({ color: 0x8b5a3c, roughness: 0.7 }),
+];
+const LANE_DASH_MAT = new THREE.MeshBasicMaterial({ color: 0xddcc44 });
+const LANE_EDGE_MAT = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
+const CROSSWALK_MAT = new THREE.MeshBasicMaterial({ color: 0xf2f2f2 });
+const WATER_TOWER_WOOD_MAT = new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.9 });
+const WATER_TOWER_METAL_MAT = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.3, metalness: 0.8 });
+const WINDOW_GEO = new THREE.PlaneGeometry(0.82, 1.24);
+const AC_GEO = new THREE.BoxGeometry(1.2, 0.8, 1.0);
+const ROOF_UNIT_GEO = new THREE.BoxGeometry(1.8, 1.2, 1.6);
 
 export function createCity(scene) {
     const cityGroup = new THREE.Group();
@@ -49,6 +104,19 @@ function createSidewalks(group) {
         ctx.fillStyle = `rgba(${100 + Math.random() * 60}, ${95 + Math.random() * 55}, ${85 + Math.random() * 50}, 0.08)`;
         ctx.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 2);
     }
+    // Hairline cracks and repaired seams for sidewalk variation.
+    ctx.strokeStyle = 'rgba(115, 107, 95, 0.38)';
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < 34; i++) {
+        const sx = Math.random() * 256;
+        const sy = Math.random() * 256;
+        const ex = sx + (Math.random() - 0.5) * 56;
+        const ey = sy + (Math.random() - 0.5) * 56;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+    }
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.wrapS = THREE.RepeatWrapping;
@@ -63,8 +131,8 @@ function createSidewalks(group) {
     });
 
     // Four sidewalk strips around the park perimeter
-    const parkEdge = 52;
-    const sidewalkWidth = 3.5;
+    const parkEdge = CITY_OUTER_EDGE - SIDEWALK_WIDTH;
+    const sidewalkWidth = SIDEWALK_WIDTH;
 
     const strips = [
         // [x, z, width, length]
@@ -111,6 +179,8 @@ function createSidewalks(group) {
         curb.castShadow = true;
         group.add(curb);
     }
+
+    createSidewalkPlanters(group);
 }
 
 // ─── Streets ────────────────────────────────────────────────
@@ -129,6 +199,28 @@ function createStreets(group) {
         ctx.fillStyle = `rgb(${b}, ${b}, ${b})`;
         ctx.fillRect(x, y, 1, 1);
     }
+    // Broad repair patches and shallow cracks for aged asphalt.
+    for (let i = 0; i < 24; i++) {
+        const x = Math.random() * 512;
+        const y = Math.random() * 512;
+        const w = 16 + Math.random() * 52;
+        const h = 10 + Math.random() * 30;
+        ctx.fillStyle = `rgba(${55 + Math.random() * 25}, ${55 + Math.random() * 25}, ${55 + Math.random() * 25}, 0.22)`;
+        ctx.fillRect(x, y, w, h);
+    }
+    ctx.strokeStyle = 'rgba(20, 20, 20, 0.38)';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 40; i++) {
+        const sx = Math.random() * 512;
+        const sy = Math.random() * 512;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(
+            sx + (Math.random() - 0.5) * 90,
+            sy + (Math.random() - 0.5) * 90
+        );
+        ctx.stroke();
+    }
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.wrapS = THREE.RepeatWrapping;
@@ -142,7 +234,7 @@ function createStreets(group) {
         color: 0x444444
     });
 
-    const outerEdge = 55.5;
+    const outerEdge = CITY_OUTER_EDGE;
     const streetW = STREET_WIDTH;
 
     // Streets on all 4 sides
@@ -183,10 +275,11 @@ function createStreets(group) {
         corner.receiveShadow = true;
         group.add(corner);
     }
+
+    addCrosswalks(group, outerEdge, streetW);
 }
 
 function addLaneMarkings(group, streetX, streetZ, streetW, streetL) {
-    const markMat = new THREE.MeshBasicMaterial({ color: 0xddcc44 });
     const isHorizontal = streetW > streetL;
 
     const length = isHorizontal ? streetW : streetL;
@@ -201,7 +294,7 @@ function addLaneMarkings(group, streetX, streetZ, streetW, streetL) {
                 isHorizontal ? dashLength : 0.12,
                 isHorizontal ? 0.12 : dashLength
             ),
-            markMat
+            LANE_DASH_MAT
         );
         dash.rotation.x = -Math.PI / 2;
         if (isHorizontal) {
@@ -213,14 +306,13 @@ function addLaneMarkings(group, streetX, streetZ, streetW, streetL) {
     }
 
     // White edge lines
-    const edgeMat = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
     for (const edgeOffset of [-1, 1]) {
         const edgeLine = new THREE.Mesh(
             new THREE.PlaneGeometry(
                 isHorizontal ? length : 0.08,
                 isHorizontal ? 0.08 : length
             ),
-            edgeMat
+            LANE_EDGE_MAT
         );
         edgeLine.rotation.x = -Math.PI / 2;
         if (isHorizontal) {
@@ -229,6 +321,100 @@ function addLaneMarkings(group, streetX, streetZ, streetW, streetL) {
             edgeLine.position.set(streetX + edgeOffset * (STREET_WIDTH / 2 - 0.3), 0.04, streetZ);
         }
         group.add(edgeLine);
+    }
+}
+
+function addCrosswalks(group, outerEdge, streetW) {
+    const stripeSpan = 2.2;
+    const stripeThickness = 0.34;
+    const stripeCount = 6;
+    const stripeGap = 0.5;
+    const cornerSigns = [-1, 1];
+
+    for (const sx of cornerSigns) {
+        for (const sz of cornerSigns) {
+            // Crosswalk on north/south streets (stripes run along X).
+            for (let i = 0; i < stripeCount; i++) {
+                const offset = (i - (stripeCount - 1) / 2) * stripeGap;
+                const stripe = new THREE.Mesh(
+                    new THREE.PlaneGeometry(stripeSpan, stripeThickness),
+                    CROSSWALK_MAT
+                );
+                stripe.rotation.x = -Math.PI / 2;
+                stripe.position.set(
+                    sx * (outerEdge + streetW * 0.5 + offset),
+                    0.045,
+                    sz * (outerEdge + 0.9)
+                );
+                group.add(stripe);
+            }
+
+            // Crosswalk on east/west streets (stripes run along Z).
+            for (let i = 0; i < stripeCount; i++) {
+                const offset = (i - (stripeCount - 1) / 2) * stripeGap;
+                const stripe = new THREE.Mesh(
+                    new THREE.PlaneGeometry(stripeThickness, stripeSpan),
+                    CROSSWALK_MAT
+                );
+                stripe.rotation.x = -Math.PI / 2;
+                stripe.position.set(
+                    sx * (outerEdge + 0.9),
+                    0.045,
+                    sz * (outerEdge + streetW * 0.5 + offset)
+                );
+                group.add(stripe);
+            }
+        }
+    }
+}
+
+function createSidewalkPlanters(group) {
+    const planterMat = new THREE.MeshStandardMaterial({
+        color: 0x8f887c,
+        roughness: 0.88,
+        metalness: 0.04
+    });
+    const soilMat = new THREE.MeshStandardMaterial({
+        color: 0x57422d,
+        roughness: 0.95,
+        metalness: 0.0
+    });
+    const shrubMats = [
+        new THREE.MeshStandardMaterial({ color: 0x6aa95f, roughness: 0.9 }),
+        new THREE.MeshStandardMaterial({ color: 0x5c9654, roughness: 0.9 }),
+        new THREE.MeshStandardMaterial({ color: 0x78ba6f, roughness: 0.88 }),
+    ];
+
+    const planterPositions = [
+        ...[-38, -22, -6, 10, 26, 42].flatMap((x) => [[x, CITY_OUTER_EDGE - 1.9], [x, -(CITY_OUTER_EDGE - 1.9)]]),
+        ...[-34, -18, 0, 18, 34].flatMap((z) => [[CITY_OUTER_EDGE - 1.9, z], [-(CITY_OUTER_EDGE - 1.9), z]]),
+    ];
+
+    for (const [x, z] of planterPositions) {
+        const planter = new THREE.Group();
+        const box = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.42, 1.2), planterMat);
+        box.position.y = 0.21;
+        box.castShadow = true;
+        box.receiveShadow = true;
+        planter.add(box);
+
+        const soil = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.12, 0.95), soilMat);
+        soil.position.y = 0.35;
+        planter.add(soil);
+
+        const shrub = new THREE.Mesh(
+            new THREE.IcosahedronGeometry(0.42, 0),
+            shrubMats[Math.floor(Math.random() * shrubMats.length)]
+        );
+        shrub.position.y = 0.72;
+        shrub.scale.y = 0.8 + Math.random() * 0.4;
+        shrub.castShadow = true;
+        shrub.userData.isLeaves = true;
+        shrub.userData.leafSway = 0.08 + Math.random() * 0.15;
+        planter.add(shrub);
+
+        planter.position.set(x, 0, z);
+        group.add(planter);
     }
 }
 
@@ -252,12 +438,12 @@ function createCityBlocks(group) {
     ];
 
     for (const side of sides) {
-        const { xRange, zRange } = side;
+        const { xRange, zRange, dir } = side;
 
         // Place buildings in a grid pattern with variation
         for (let x = xRange[0]; x < xRange[1]; x += BLOCK_SIZE + 2) {
             for (let z = zRange[0]; z < zRange[1]; z += BLOCK_SIZE + 2) {
-                if (Math.random() < 0.15) continue; // occasional empty lot
+                if (Math.random() < 0.12) continue; // occasional empty lot
 
                 const bWidth = 6 + Math.random() * 8;
                 const bDepth = 6 + Math.random() * 8;
@@ -269,23 +455,43 @@ function createCityBlocks(group) {
 
                 const finalHeight = bHeight * heightMult;
                 const colorIdx = Math.floor(Math.random() * buildingColors.length);
+                const styleSeed = Math.random();
+                const jitterX = (Math.random() - 0.5) * 2.4;
+                let jitterZ = (Math.random() - 0.5) * 2.4;
+                let adjustedJitterX = jitterX;
 
-                createBuilding(group, x + Math.random() * 3, z + Math.random() * 3,
-                    bWidth, bDepth, finalHeight, buildingColors[colorIdx]);
+                if (dir === 'north') jitterZ = Math.random() * 2.2;
+                if (dir === 'south') jitterZ = -Math.random() * 2.2;
+                if (dir === 'east') {
+                    adjustedJitterX = Math.random() * 2.2;
+                    jitterZ = (Math.random() - 0.5) * 2.2;
+                }
+                if (dir === 'west') {
+                    adjustedJitterX = -Math.random() * 2.2;
+                    jitterZ = (Math.random() - 0.5) * 2.2;
+                }
+
+                createBuilding(
+                    group,
+                    x + adjustedJitterX,
+                    z + jitterZ,
+                    bWidth,
+                    bDepth,
+                    finalHeight,
+                    buildingColors[colorIdx],
+                    styleSeed,
+                    dir
+                );
             }
         }
     }
 }
 
-function createBuilding(group, x, z, width, depth, height, color) {
+function createBuilding(group, x, z, width, depth, height, color, styleSeed, district) {
     const building = new THREE.Group();
 
     // Main structure
-    const bodyMat = new THREE.MeshStandardMaterial({
-        color: color,
-        roughness: 0.75,
-        metalness: 0.1
-    });
+    const bodyMat = getBuildingBodyMaterial(color);
 
     const body = new THREE.Mesh(
         new THREE.BoxGeometry(width, height, depth),
@@ -296,27 +502,29 @@ function createBuilding(group, x, z, width, depth, height, color) {
     body.receiveShadow = true;
     building.add(body);
 
+    addFacadeArticulation(building, width, depth, height, color, styleSeed);
+
     // Windows (grid of emissive rectangles on front faces)
-    addBuildingWindows(building, width, depth, height, x, z);
+    addBuildingWindows(building, width, depth, height, styleSeed);
 
     // Roof details
-    if (Math.random() > 0.5) {
+    if (styleSeed > 0.18) {
         // Water tower (NYC style)
-        if (height > 20 && Math.random() > 0.6) {
+        if (height > 20 && styleSeed > 0.62) {
             addWaterTower(building, height, width, depth);
         }
-        // AC units
-        if (Math.random() > 0.4) {
-            const acCount = 1 + Math.floor(Math.random() * 3);
+        // Rooftop mechanical units
+        if (styleSeed > 0.35) {
+            const acCount = 1 + Math.floor(styleSeed * 3);
             for (let i = 0; i < acCount; i++) {
                 const ac = new THREE.Mesh(
-                    new THREE.BoxGeometry(1.2, 0.8, 1.0),
-                    new THREE.MeshStandardMaterial({ color: 0x667766, roughness: 0.6, metalness: 0.4 })
+                    i % 2 === 0 ? AC_GEO : ROOF_UNIT_GEO,
+                    ROOF_METAL_MAT
                 );
                 ac.position.set(
-                    (Math.random() - 0.5) * (width - 2),
+                    (Math.random() - 0.5) * (width - 2.2),
                     height + 0.4,
-                    (Math.random() - 0.5) * (depth - 2)
+                    (Math.random() - 0.5) * (depth - 2.2)
                 );
                 ac.castShadow = true;
                 building.add(ac);
@@ -327,17 +535,18 @@ function createBuilding(group, x, z, width, depth, height, color) {
     // Cornice / ledge at top
     const cornice = new THREE.Mesh(
         new THREE.BoxGeometry(width + 0.3, 0.3, depth + 0.3),
-        new THREE.MeshStandardMaterial({ color: new THREE.Color(color).multiplyScalar(0.85), roughness: 0.8 })
+        getBuildingCorniceMaterial(color)
     );
     cornice.position.y = height;
     building.add(cornice);
 
+    addRooftopSilhouette(building, width, depth, height, color, styleSeed, district);
+
     // Ground floor awning (some buildings)
-    if (Math.random() > 0.6) {
-        const awningColor = [0xcc3333, 0x336633, 0x334488, 0x884422][Math.floor(Math.random() * 4)];
+    if (styleSeed > 0.56) {
         const awning = new THREE.Mesh(
             new THREE.BoxGeometry(width * 0.8, 0.08, 1.5),
-            new THREE.MeshStandardMaterial({ color: awningColor, roughness: 0.7 })
+            AWNING_MATERIALS[Math.floor(styleSeed * AWNING_MATERIALS.length) % AWNING_MATERIALS.length]
         );
         awning.position.set(0, 3.2, depth / 2 + 0.7);
         building.add(awning);
@@ -347,27 +556,132 @@ function createBuilding(group, x, z, width, depth, height, color) {
     group.add(building);
 }
 
-function addBuildingWindows(building, width, depth, height, bx, bz) {
-    const windowMat = new THREE.MeshStandardMaterial({
-        color: 0x88aacc,
-        emissive: 0x334455,
-        emissiveIntensity: 0.15,
-        roughness: 0.1,
-        metalness: 0.6
-    });
-    const litWindowMat = new THREE.MeshStandardMaterial({
-        color: 0xffeebb,
-        emissive: 0xffcc66,
-        emissiveIntensity: 0.4,
-        roughness: 0.2,
-        metalness: 0.1
-    });
+function getBuildingBodyMaterial(color) {
+    if (!buildingBodyMaterialCache.has(color)) {
+        buildingBodyMaterialCache.set(color, new THREE.MeshStandardMaterial({
+            color,
+            roughness: 0.75,
+            metalness: 0.1
+        }));
+    }
+    return buildingBodyMaterialCache.get(color);
+}
 
-    const windowW = 0.8;
-    const windowH = 1.2;
+function getBuildingCorniceMaterial(color) {
+    if (!buildingCorniceMaterialCache.has(color)) {
+        const corniceColor = new THREE.Color(color).multiplyScalar(0.82).getHex();
+        buildingCorniceMaterialCache.set(color, new THREE.MeshStandardMaterial({
+            color: corniceColor,
+            roughness: 0.8,
+            metalness: 0.08
+        }));
+    }
+    return buildingCorniceMaterialCache.get(color);
+}
+
+function getBuildingAccentMaterial(color, keySuffix, scalar, roughness = 0.76, metalness = 0.08) {
+    const cacheKey = `${color}|${keySuffix}`;
+    if (!buildingAccentMaterialCache.has(cacheKey)) {
+        buildingAccentMaterialCache.set(cacheKey, new THREE.MeshStandardMaterial({
+            color: new THREE.Color(color).multiplyScalar(scalar),
+            roughness,
+            metalness
+        }));
+    }
+    return buildingAccentMaterialCache.get(cacheKey);
+}
+
+function addFacadeArticulation(building, width, depth, height, color, styleSeed) {
+    const insetDepth = 0.18;
+    const accentMat = getBuildingAccentMaterial(color, 'accent', 0.92, 0.78, 0.05);
+
+    if (styleSeed > 0.28) {
+        const horizBands = height > 18 ? 2 : 1;
+        for (let i = 0; i < horizBands; i++) {
+            const y = height * (0.33 + i * 0.31);
+            const bandFront = new THREE.Mesh(new THREE.BoxGeometry(width + 0.06, 0.16, insetDepth), accentMat);
+            bandFront.position.set(0, y, depth / 2 + insetDepth * 0.5);
+            building.add(bandFront);
+
+            const bandBack = new THREE.Mesh(new THREE.BoxGeometry(width + 0.06, 0.16, insetDepth), accentMat);
+            bandBack.position.set(0, y, -(depth / 2 + insetDepth * 0.5));
+            building.add(bandBack);
+        }
+    }
+
+    if (styleSeed > 0.42) {
+        const pilasterMat = getBuildingAccentMaterial(color, 'pilaster', 0.84, 0.8, 0.04);
+        const pilasterGeo = new THREE.BoxGeometry(0.26, height - 1.0, insetDepth);
+        for (const xSign of [-1, 1]) {
+            const pilaster = new THREE.Mesh(pilasterGeo, pilasterMat);
+            pilaster.position.set(xSign * (width / 2 - 0.22), (height - 1.0) / 2 + 0.5, depth / 2 + insetDepth * 0.52);
+            building.add(pilaster);
+
+            const pilasterBack = new THREE.Mesh(pilasterGeo, pilasterMat);
+            pilasterBack.position.set(xSign * (width / 2 - 0.22), (height - 1.0) / 2 + 0.5, -(depth / 2 + insetDepth * 0.52));
+            building.add(pilasterBack);
+        }
+    }
+}
+
+function addRooftopSilhouette(building, width, depth, height, color, styleSeed, district) {
+    if (height > 14 && styleSeed > 0.34) {
+        const tower = new THREE.Mesh(
+            new THREE.BoxGeometry(width * 0.64, Math.min(8, height * 0.22), depth * 0.64),
+            getBuildingAccentMaterial(color, 'setback', 1.05, 0.72, 0.1)
+        );
+        tower.position.y = height + tower.geometry.parameters.height / 2;
+        tower.castShadow = true;
+        tower.receiveShadow = true;
+        building.add(tower);
+    }
+
+    if (styleSeed > 0.5) {
+        const railH = 0.22;
+        const rails = [
+            new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, railH, 0.08), ROOF_RAIL_MAT),
+            new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, railH, 0.08), ROOF_RAIL_MAT),
+            new THREE.Mesh(new THREE.BoxGeometry(0.08, railH, depth + 0.2), ROOF_RAIL_MAT),
+            new THREE.Mesh(new THREE.BoxGeometry(0.08, railH, depth + 0.2), ROOF_RAIL_MAT),
+        ];
+        rails[0].position.set(0, height + railH * 0.5, depth / 2 + 0.06);
+        rails[1].position.set(0, height + railH * 0.5, -(depth / 2 + 0.06));
+        rails[2].position.set(width / 2 + 0.06, height + railH * 0.5, 0);
+        rails[3].position.set(-(width / 2 + 0.06), height + railH * 0.5, 0);
+        for (const rail of rails) building.add(rail);
+    }
+
+    if (styleSeed > 0.73 && height > 11) {
+        const billboard = new THREE.Group();
+        const boardMat = district === 'north' || district === 'east' ? BILLBOARD_COOL_MAT : BILLBOARD_WARM_MAT;
+        const board = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.5, 0.12), boardMat);
+        board.position.y = 2.1;
+        board.castShadow = true;
+        billboard.add(board);
+
+        const supportGeo = new THREE.BoxGeometry(0.12, 2.0, 0.12);
+        for (const xOff of [-1.0, 1.0]) {
+            const support = new THREE.Mesh(supportGeo, ROOF_RAIL_MAT);
+            support.position.set(xOff, 1.0, 0);
+            billboard.add(support);
+        }
+
+        billboard.position.set(
+            (Math.random() - 0.5) * Math.max(1.0, width - 4.0),
+            height,
+            depth / 2 + 0.16
+        );
+        building.add(billboard);
+    }
+}
+
+function addBuildingWindows(building, width, depth, height, styleSeed) {
     const floorHeight = 3.2;
+    const windowH = WINDOW_GEO.parameters.height;
     const floors = Math.floor(height / floorHeight);
-    const windowsPerFloor = Math.max(1, Math.floor(width / 2.5));
+    const windowsPerFloor = Math.max(1, Math.floor(width / (2.85 + styleSeed * 0.9)));
+    const windowScaleX = 0.85 + styleSeed * 0.3;
+    const windowScaleY = 0.9 + (1 - styleSeed) * 0.18;
 
     // Front and back faces
     for (const zSide of [-1, 1]) {
@@ -379,9 +693,10 @@ function addBuildingWindows(building, width, depth, height, bx, bz) {
 
                 const isLit = Math.random() > 0.6;
                 const win = new THREE.Mesh(
-                    new THREE.PlaneGeometry(windowW, windowH),
-                    isLit ? litWindowMat : windowMat
+                    WINDOW_GEO,
+                    isLit ? WINDOW_LIT_MAT : WINDOW_DARK_MAT
                 );
+                win.scale.set(windowScaleX, windowScaleY, 1);
                 win.position.set(wx, wy, wz);
                 if (zSide === -1) win.rotation.y = Math.PI;
                 building.add(win);
@@ -390,7 +705,7 @@ function addBuildingWindows(building, width, depth, height, bx, bz) {
     }
 
     // Side faces
-    const sideWindowsPerFloor = Math.max(1, Math.floor(depth / 2.5));
+    const sideWindowsPerFloor = Math.max(1, Math.floor(depth / (2.9 + (1 - styleSeed) * 0.6)));
     for (const xSide of [-1, 1]) {
         for (let floor = 1; floor < floors; floor++) {
             for (let w = 0; w < sideWindowsPerFloor; w++) {
@@ -400,9 +715,10 @@ function addBuildingWindows(building, width, depth, height, bx, bz) {
 
                 const isLit = Math.random() > 0.6;
                 const win = new THREE.Mesh(
-                    new THREE.PlaneGeometry(windowW, windowH),
-                    isLit ? litWindowMat : windowMat
+                    WINDOW_GEO,
+                    isLit ? WINDOW_LIT_MAT : WINDOW_DARK_MAT
                 );
+                win.scale.set(windowScaleX, windowScaleY, 1);
                 win.position.set(wx, wy, wz);
                 win.rotation.y = xSide * Math.PI / 2;
                 building.add(win);
@@ -412,15 +728,12 @@ function addBuildingWindows(building, width, depth, height, bx, bz) {
 }
 
 function addWaterTower(building, height, bWidth, bDepth) {
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.9 });
-    const metalMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.3, metalness: 0.8 });
-
     const tower = new THREE.Group();
 
     // Tank
     const tank = new THREE.Mesh(
         new THREE.CylinderGeometry(1.2, 1.3, 2.5, 10),
-        woodMat
+        WATER_TOWER_WOOD_MAT
     );
     tank.position.y = 3.5;
     tank.castShadow = true;
@@ -429,7 +742,7 @@ function addWaterTower(building, height, bWidth, bDepth) {
     // Cone roof
     const roof = new THREE.Mesh(
         new THREE.ConeGeometry(1.4, 1.0, 10),
-        woodMat
+        WATER_TOWER_WOOD_MAT
     );
     roof.position.y = 5.2;
     tower.add(roof);
@@ -439,7 +752,7 @@ function addWaterTower(building, height, bWidth, bDepth) {
         const angle = (i / 4) * Math.PI * 2 + Math.PI / 4;
         const leg = new THREE.Mesh(
             new THREE.CylinderGeometry(0.08, 0.08, 2.5, 4),
-            metalMat
+            WATER_TOWER_METAL_MAT
         );
         leg.position.set(Math.cos(angle) * 1.0, 1.25, Math.sin(angle) * 1.0);
         tower.add(leg);
@@ -449,7 +762,7 @@ function addWaterTower(building, height, bWidth, bDepth) {
     for (const y of [3.0, 3.8, 4.5]) {
         const band = new THREE.Mesh(
             new THREE.TorusGeometry(1.25, 0.04, 4, 16),
-            metalMat
+            WATER_TOWER_METAL_MAT
         );
         band.rotation.x = Math.PI / 2;
         band.position.y = y;
@@ -466,7 +779,7 @@ function addWaterTower(building, height, bWidth, bDepth) {
 
 // ─── Street Props (hydrants, mailboxes, signs, etc.) ────────
 function createStreetProps(group) {
-    const outerEdge = 55.5;
+    const outerEdge = CITY_OUTER_EDGE;
 
     // Fire hydrants
     const hydrantPositions = [
@@ -606,7 +919,7 @@ function createTrafficLight(group, x, z) {
 // ─── Parked Cars ────────────────────────────────────────────
 function createParkedCars(group) {
     const carColors = [0x222222, 0xcc2222, 0x2244aa, 0xeeeeee, 0x444444, 0x886622, 0x228833];
-    const outerEdge = 55.5;
+    const outerEdge = CITY_OUTER_EDGE;
     const streetOffset = outerEdge + STREET_WIDTH * 0.75;
 
     // Cars along streets
