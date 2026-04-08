@@ -28,6 +28,14 @@ export const GAME_STATE      = 'GAME_STATE';      // Host→S→C  { t, b, p, s,
 export const GAME_ACTION     = 'GAME_ACTION';     // Host→S→C  { action, data }
 export const GAME_OVER       = 'GAME_OVER';       // Host→S→C  { winner, score }
 
+// ── Pickup World ────────────────────────────────────────────
+export const PICKUP_ENTER_WORLD  = 'PICKUP_ENTER_WORLD';  // C→S {} → S→C { ok }
+export const PICKUP_LEAVE_WORLD  = 'PICKUP_LEAVE_WORLD';  // C→S {}
+export const PICKUP_POSITION     = 'PICKUP_POSITION';     // C→S { x, z, a }
+export const PICKUP_WORLD_STATE  = 'PICKUP_WORLD_STATE';  // S→C { p[], hq[], aq[], cd }
+export const PICKUP_ZONE_ENTER   = 'PICKUP_ZONE_ENTER';   // C→S { team }
+export const PICKUP_ZONE_LEAVE   = 'PICKUP_ZONE_LEAVE';   // C→S {}
+
 // ── Connection ───────────────────────────────────────────────
 export const PING            = 'PING';            // C→S  { t }
 export const PONG            = 'PONG';            // S→C  { t }

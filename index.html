@@ -1614,6 +1614,129 @@
             color: rgba(200, 210, 240, 0.32);
             font-weight: 700;
         }
+        /* ── Pickup World HUD ────────────────────────────── */
+        #pickup-world-hud {
+            position: fixed;
+            top: 18px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 150;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            pointer-events: none;
+            transition: opacity 0.35s ease;
+        }
+        .pickup-queue-panel {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 10px 20px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, rgba(12, 18, 38, 0.72), rgba(18, 28, 52, 0.64));
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+        .pickup-team-block {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .pickup-team-label {
+            font-size: 0.58rem;
+            font-weight: 800;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+        }
+        .pickup-team-label.home { color: #ff6b4a; }
+        .pickup-team-label.away { color: #5599ff; }
+        .pickup-slots {
+            display: flex;
+            gap: 5px;
+        }
+        .pickup-slot {
+            width: 44px;
+            height: 26px;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.48rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.35);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.04);
+            transition: all 0.25s ease;
+        }
+        .pickup-slot.home-slot.filled {
+            background: rgba(204, 34, 34, 0.35);
+            border-color: rgba(255, 100, 80, 0.45);
+            color: #ff9988;
+        }
+        .pickup-slot.away-slot.filled {
+            background: rgba(34, 102, 204, 0.35);
+            border-color: rgba(85, 153, 255, 0.45);
+            color: #99bbff;
+        }
+        .pickup-vs {
+            font-size: 0.55rem;
+            font-weight: 800;
+            letter-spacing: 0.2em;
+            color: rgba(255, 255, 255, 0.25);
+        }
+        #pickup-prompt {
+            font-size: 0.62rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: rgba(255, 255, 255, 0.45);
+            transition: color 0.3s ease;
+        }
+        #pickup-countdown-display {
+            display: none;
+            font-size: 1.1rem;
+            font-weight: 900;
+            letter-spacing: 0.22em;
+            text-transform: uppercase;
+            color: #ffcc44;
+            text-shadow: 0 0 12px rgba(255, 200, 60, 0.5), 0 0 28px rgba(255, 180, 40, 0.25);
+            animation: pickup-countdown-pulse 0.6s ease-in-out infinite alternate;
+        }
+        @keyframes pickup-countdown-pulse {
+            from { opacity: 0.85; transform: scale(1); }
+            to   { opacity: 1;    transform: scale(1.04); }
+        }
+        .pickup-exit-btn {
+            position: fixed;
+            bottom: 56px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 150;
+            padding: 8px 22px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 6px;
+            background: rgba(40, 20, 20, 0.6);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            color: rgba(255, 255, 255, 0.65);
+            font-size: 0.58rem;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            cursor: pointer;
+            pointer-events: auto;
+            transition: background 0.2s, color 0.2s, transform 0.15s;
+        }
+        .pickup-exit-btn:hover {
+            background: rgba(180, 50, 50, 0.55);
+            color: #fff;
+            transform: translateX(-50%) translateY(-1px);
+        }
+
     </style>
 </head>
 <body>
@@ -1820,6 +1943,32 @@
             <div class="stamina-hud-fill" id="stamina-hud-fill"></div>
         </div>
         <div class="stamina-hud-value" id="stamina-hud-value">100%</div>
+    </div>
+
+    <!-- Pickup World HUD -->
+    <div id="pickup-world-hud" class="hud-hidden" aria-hidden="true">
+        <div class="pickup-queue-panel">
+            <div class="pickup-team-block">
+                <span class="pickup-team-label home">Home</span>
+                <div class="pickup-slots">
+                    <div class="pickup-slot home-slot" id="pickup-home-slot-0">Open</div>
+                    <div class="pickup-slot home-slot" id="pickup-home-slot-1">Open</div>
+                    <div class="pickup-slot home-slot" id="pickup-home-slot-2">Open</div>
+                </div>
+            </div>
+            <span class="pickup-vs">VS</span>
+            <div class="pickup-team-block">
+                <div class="pickup-slots">
+                    <div class="pickup-slot away-slot" id="pickup-away-slot-0">Open</div>
+                    <div class="pickup-slot away-slot" id="pickup-away-slot-1">Open</div>
+                    <div class="pickup-slot away-slot" id="pickup-away-slot-2">Open</div>
+                </div>
+                <span class="pickup-team-label away">Away</span>
+            </div>
+        </div>
+        <div id="pickup-prompt">Walk to a court entrance to join a team</div>
+        <div id="pickup-countdown-display"></div>
+        <button class="pickup-exit-btn" onclick="exitPickupWorldToMenu()">Leave Pickup</button>
     </div>
 
     <div id="ui-buttons">

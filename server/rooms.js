@@ -143,7 +143,7 @@ export function createRoom(sessionId, nickname, ws, options = {}) {
     return { ok: true, code, room: serializeRoom(room) };
 }
 
-export function joinRoom(sessionId, nickname, ws, code) {
+export function joinRoom(sessionId, nickname, ws, code, preferredTeam = null) {
     const room = rooms.get(code?.toUpperCase());
     if (!room) {
         return { ok: false, error: 'Room not found.' };
@@ -158,7 +158,7 @@ export function joinRoom(sessionId, nickname, ws, code) {
         return { ok: false, error: 'Already in this room.' };
     }
 
-    const team = autoAssignTeam(room);
+    const team = (preferredTeam === 'home' || preferredTeam === 'away') ? preferredTeam : autoAssignTeam(room);
     const slot = nextSlot(room, team);
     if (slot < 0) {
         return { ok: false, error: 'No slots available.' };

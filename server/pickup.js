@@ -1,376 +1,304 @@
-// ─── Hoops Royale Pickup Queue ─────────────────────────────
-// Server-side winner-stays-on pickup game system.
-// State machine: WAITING → STAGING → PLAYING → RESULT → loop
+// ─── Hoops Royale Pickup World ─────────────────────────────
+// Persistent world where players walk around the park, approach
+// court gate entrances to queue for teams, and auto-start games
+// when both teams fill up.
 //
-// Queue is FIFO. When 6+ players are available, the first 3
-// form the challenger team against the current winners (or
-// the first 6 split into two teams for a fresh game).
+// Players enter the 3D world, walk to glowing queue zones at
+// each court gate (home = -Z gate, away = +Z gate), and stand
+// in the zone to claim a slot. When 3 players queue on each
+// side the countdown starts and a game begins.
 
 import {
-    createRoom, joinRoom, leaveRoom, broadcastToRoom,
-    broadcastRoomUpdate, serializeRoom, getRoomForSession
+    createRoom, joinRoom, startGame,
+    getRoomForSession, broadcastToRoom
 } from './rooms.js';
 import {
-    PICKUP_UPDATE, PICKUP_MATCH, JOIN_PICKUP, LEAVE_PICKUP,
-    START_GAME, ROOM_UPDATE, ERROR
+    PICKUP_WORLD_STATE, PICKUP_ENTER_WORLD, START_GAME, ERROR
 } from './protocol.js';
 
 // ─── Constants ─────────────────────────────────────────────
-const STAGING_COUNTDOWN = 15; // seconds
 const TEAM_SIZE = 3;
-const MIN_PLAYERS_TO_START = TEAM_SIZE * 2;
+const COUNTDOWN_SEC = 5;
+const BROADCAST_MS = 100;         // 10 Hz world state broadcast
+const AFK_TIMEOUT = 45_000;       // 45 seconds without heartbeat
 const PICKUP_SCORE_TARGET = 11;
-const AFK_TIMEOUT = 30_000; // 30 seconds heartbeat timeout
 
-// ─── State ─────────────────────────────────────────────────
-// Queue entry: { sessionId, ws, nickname, joinedAt, lastHeartbeat }
-const queue = [];
+// ─── World State ──────────────────────────────────────────
+// sessionId → { ws, nickname, x, z, angle, team, queued, lastHeartbeat }
+const worldPlayers = new Map();
 
-// Current winners (array of { sessionId, ws, nickname })
-let winners = [];
+const homeQueue = [];   // ordered sessionIds queued for home (−Z gate)
+const awayQueue = [];   // ordered sessionIds queued for away (+Z gate)
 
-// Pickup room code (reused across games)
-let pickupRoomCode = null;
+let countdown = -1;           // seconds remaining, -1 = inactive
+let countdownTimer = null;
+let broadcastTimer = null;
 
-// State machine phase
-let phase = 'waiting'; // 'waiting' | 'staging' | 'playing' | 'result'
-
-// Staging timer
-let stagingTimer = null;
-let stagingCountdown = STAGING_COUNTDOWN;
-
-// Spectators watching the current game
-const spectators = new Set(); // sessionId set
-
-// ─── Queue Management ──────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────
 
 function send(ws, msg) {
-    if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify(msg));
-    }
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
 }
 
-export function joinPickupQueue(sessionId, nickname, ws) {
-    // Check if already in queue
-    if (queue.some(q => q.sessionId === sessionId)) {
-        send(ws, { type: ERROR, message: 'Already in the pickup queue.' });
+function removeFromArray(arr, value) {
+    const idx = arr.indexOf(value);
+    if (idx >= 0) arr.splice(idx, 1);
+}
+
+// ─── Enter / Leave World ──────────────────────────────────
+
+export function enterPickupWorld(sessionId, nickname, ws) {
+    if (worldPlayers.has(sessionId)) {
+        // Already in world — update ws in case of reconnect
+        const p = worldPlayers.get(sessionId);
+        p.ws = ws;
         return;
     }
 
-    // Check if already a winner waiting
-    if (winners.some(w => w.sessionId === sessionId)) {
-        send(ws, { type: ERROR, message: 'You\'re already on court.' });
-        return;
-    }
-
-    queue.push({
-        sessionId,
+    worldPlayers.set(sessionId, {
         ws,
         nickname,
-        joinedAt: Date.now(),
+        x: 0,
+        z: -28,
+        angle: 0,
+        team: null,
+        queued: false,
         lastHeartbeat: Date.now()
     });
 
-    // Send queue position to the new player
-    broadcastQueueUpdate();
-
-    // Check if we can start a game
-    tryAdvancePhase();
+    ensureBroadcasting();
 }
 
-export function leavePickupQueue(sessionId) {
-    const idx = queue.findIndex(q => q.sessionId === sessionId);
-    if (idx >= 0) {
-        queue.splice(idx, 1);
-        broadcastQueueUpdate();
-    }
-
-    // Also remove from winners if applicable
-    const wIdx = winners.findIndex(w => w.sessionId === sessionId);
-    if (wIdx >= 0) {
-        winners.splice(wIdx, 1);
-        // If a winner leaves, check if we need to reset
-        if (phase === 'result' || phase === 'waiting') {
-            tryAdvancePhase();
-        }
-    }
-
-    // Remove from spectators
-    spectators.delete(sessionId);
+export function leavePickupWorld(sessionId) {
+    leaveZoneInternal(sessionId);
+    worldPlayers.delete(sessionId);
+    stopBroadcastIfEmpty();
 }
 
-export function handlePickupDisconnect(sessionId) {
-    leavePickupQueue(sessionId);
+// ─── Position Updates ─────────────────────────────────────
+
+export function updatePickupPosition(sessionId, x, z, angle) {
+    const p = worldPlayers.get(sessionId);
+    if (!p) return;
+    p.x = x;
+    p.z = z;
+    p.angle = angle;
+    p.lastHeartbeat = Date.now();
 }
 
-// ─── Phase Machine ─────────────────────────────────────────
+// ─── Zone Queuing ─────────────────────────────────────────
 
-function tryAdvancePhase() {
-    if (phase === 'waiting') {
-        const totalAvailable = queue.length + winners.length;
-        if (totalAvailable >= MIN_PLAYERS_TO_START) {
-            startStaging();
-        }
-    } else if (phase === 'result') {
-        // After a game ends, try to start the next one
-        const challengers = queue.length;
-        if (challengers >= TEAM_SIZE) {
-            startStaging();
-        } else if (winners.length === 0 && challengers >= MIN_PLAYERS_TO_START) {
-            // No winners (all left), fresh game
-            startStaging();
-        } else {
-            // Not enough for next game, go to waiting
-            phase = 'waiting';
-            broadcastQueueUpdate();
-        }
-    }
-}
+export function enterPickupZone(sessionId, team) {
+    const p = worldPlayers.get(sessionId);
+    if (!p) return;
+    if (team !== 'home' && team !== 'away') return;
 
-function startStaging() {
-    phase = 'staging';
-    stagingCountdown = STAGING_COUNTDOWN;
+    // Leave previous zone if in one
+    leaveZoneInternal(sessionId);
 
-    // Determine teams
-    let homeTeam, awayTeam;
-
-    if (winners.length >= TEAM_SIZE) {
-        // Winners stay as home team, next 3 from queue are away
-        homeTeam = winners.slice(0, TEAM_SIZE);
-        awayTeam = queue.splice(0, TEAM_SIZE);
-    } else {
-        // Fresh game: first 3 from queue are home, next 3 are away
-        // Add any remaining winners back to front of queue
-        for (const w of winners) {
-            queue.unshift(w);
-        }
-        winners = [];
-        homeTeam = queue.splice(0, TEAM_SIZE);
-        awayTeam = queue.splice(0, TEAM_SIZE);
-    }
-
-    // Notify matched players
-    for (let i = 0; i < homeTeam.length; i++) {
-        send(homeTeam[i].ws, {
-            type: PICKUP_MATCH,
-            team: 'home',
-            slot: i,
-            nickname: homeTeam[i].nickname,
-            countdown: stagingCountdown
-        });
-    }
-    for (let i = 0; i < awayTeam.length; i++) {
-        send(awayTeam[i].ws, {
-            type: PICKUP_MATCH,
-            team: 'away',
-            slot: i,
-            nickname: awayTeam[i].nickname,
-            countdown: stagingCountdown
-        });
-    }
-
-    // Store matched players for game creation
-    const matchedPlayers = { home: homeTeam, away: awayTeam };
-
-    // Remaining queue members become spectators
-    for (const q of queue) {
-        spectators.add(q.sessionId);
-    }
-
-    // Start countdown
-    stagingTimer = setInterval(() => {
-        stagingCountdown--;
-
-        // Broadcast countdown to all matched players
-        const countdownMsg = { type: PICKUP_UPDATE, phase: 'staging', countdown: stagingCountdown };
-        for (const p of matchedPlayers.home) send(p.ws, countdownMsg);
-        for (const p of matchedPlayers.away) send(p.ws, countdownMsg);
-
-        if (stagingCountdown <= 0) {
-            clearInterval(stagingTimer);
-            stagingTimer = null;
-            startPickupGame(matchedPlayers);
-        }
-    }, 1000);
-
-    broadcastQueueUpdate();
-}
-
-function startPickupGame(matchedPlayers) {
-    phase = 'playing';
-
-    // The first home player is the host
-    const host = matchedPlayers.home[0];
-
-    // Build slot assignments
-    const slotAssignments = {};
-    for (let i = 0; i < matchedPlayers.home.length; i++) {
-        const p = matchedPlayers.home[i];
-        slotAssignments[p.sessionId] = { team: 'home', slot: i, nickname: p.nickname };
-    }
-    for (let i = 0; i < matchedPlayers.away.length; i++) {
-        const p = matchedPlayers.away[i];
-        slotAssignments[p.sessionId] = { team: 'away', slot: i, nickname: p.nickname };
-    }
-
-    // Send START_GAME to all matched players
-    const startMsg = {
-        type: START_GAME,
-        slotAssignments,
-        hostId: host.sessionId,
-        settings: {
-            scoreTarget: PICKUP_SCORE_TARGET,
-            mode: 'pickup'
-        }
-    };
-    for (const p of matchedPlayers.home) send(p.ws, startMsg);
-    for (const p of matchedPlayers.away) send(p.ws, startMsg);
-
-    // Store current players for result phase
-    winners = []; // Will be set after game ends
-    broadcastQueueUpdate();
-}
-
-/**
- * Called when a pickup game ends.
- * @param {string} winnerTeam - 'home' or 'away'
- * @param {Object} slotAssignments - the slot assignments from the game
- */
-export function handlePickupGameOver(winnerTeam, slotAssignments) {
-    phase = 'result';
-
-    if (!slotAssignments) {
-        winners = [];
-        tryAdvancePhase();
+    const queue = team === 'home' ? homeQueue : awayQueue;
+    if (queue.length >= TEAM_SIZE) {
+        send(p.ws, { type: ERROR, message: 'That side is full.' });
         return;
     }
 
-    // Determine winners and losers
-    const newWinners = [];
-    const losers = [];
+    queue.push(sessionId);
+    p.team = team;
+    p.queued = true;
 
-    for (const [sid, assignment] of Object.entries(slotAssignments)) {
-        const entry = { sessionId: sid, nickname: assignment.nickname };
-        // Try to find their ws from queue entries or existing tracking
-        const queueEntry = queue.find(q => q.sessionId === sid);
-        if (queueEntry) entry.ws = queueEntry.ws;
-
-        if (assignment.team === winnerTeam) {
-            newWinners.push(entry);
-        } else {
-            losers.push(entry);
-        }
-    }
-
-    // Winners stay on court
-    winners = newWinners;
-
-    // Losers go to back of queue
-    for (const loser of losers) {
-        if (loser.ws) {
-            queue.push({
-                sessionId: loser.sessionId,
-                ws: loser.ws,
-                nickname: loser.nickname,
-                joinedAt: Date.now(),
-                lastHeartbeat: Date.now()
-            });
-        }
-    }
-
-    broadcastQueueUpdate();
-
-    // Short delay before trying next game
-    setTimeout(() => tryAdvancePhase(), 3000);
+    checkGameReady();
 }
 
-// ─── Queue Broadcast ───────────────────────────────────────
+export function leavePickupZone(sessionId) {
+    leaveZoneInternal(sessionId);
+}
 
-function broadcastQueueUpdate() {
-    const courtStatus = getCourtStatus();
+function leaveZoneInternal(sessionId) {
+    const p = worldPlayers.get(sessionId);
+    if (!p || !p.queued) return;
 
-    // Update everyone in queue
-    for (let i = 0; i < queue.length; i++) {
-        send(queue[i].ws, {
-            type: PICKUP_UPDATE,
-            phase,
-            queuePos: i + 1,
-            queueLen: queue.length,
-            court: courtStatus
+    removeFromArray(homeQueue, sessionId);
+    removeFromArray(awayQueue, sessionId);
+    p.team = null;
+    p.queued = false;
+
+    // Cancel countdown if teams no longer full
+    if (countdown > 0 && (homeQueue.length < TEAM_SIZE || awayQueue.length < TEAM_SIZE)) {
+        cancelCountdown();
+    }
+}
+
+// ─── Game Readiness ───────────────────────────────────────
+
+function checkGameReady() {
+    if (homeQueue.length >= TEAM_SIZE && awayQueue.length >= TEAM_SIZE && countdown < 0) {
+        startCountdown();
+    }
+}
+
+function startCountdown() {
+    countdown = COUNTDOWN_SEC;
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+        countdown--;
+        if (countdown <= 0) {
+            clearInterval(countdownTimer);
+            countdownTimer = null;
+            launchPickupGame();
+        }
+    }, 1000);
+}
+
+function cancelCountdown() {
+    countdown = -1;
+    if (countdownTimer) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+    }
+}
+
+// ─── Game Launch ──────────────────────────────────────────
+
+function launchPickupGame() {
+    countdown = -1;
+
+    const homeSids = homeQueue.splice(0, TEAM_SIZE);
+    const awaySids = awayQueue.splice(0, TEAM_SIZE);
+
+    // Designate host = first home player
+    const hostSid = homeSids[0];
+    const hostP = worldPlayers.get(hostSid);
+    if (!hostP) return;
+
+    // Create room via the room system
+    const roomResult = createRoom(hostSid, hostP.nickname, hostP.ws, {
+        name: 'Pickup Game',
+        isPublic: false,
+        scoreTarget: PICKUP_SCORE_TARGET,
+        mode: 'pickup'
+    });
+    if (!roomResult.ok) return;
+    const code = roomResult.code;
+
+    // Join remaining home players (host already joined via createRoom)
+    for (let i = 1; i < homeSids.length; i++) {
+        const sid = homeSids[i];
+        const p = worldPlayers.get(sid);
+        if (p) joinRoom(sid, p.nickname, p.ws, code, 'home');
+    }
+
+    // Join away players
+    for (const sid of awaySids) {
+        const p = worldPlayers.get(sid);
+        if (p) joinRoom(sid, p.nickname, p.ws, code, 'away');
+    }
+
+    // Mark all players as ready and start the game
+    const room = getRoomForSession(hostSid);
+    if (room) {
+        for (const pl of room.players.values()) pl.ready = true;
+    }
+    const gameResult = startGame(hostSid);
+    if (!gameResult.ok) return;
+
+    // Broadcast START_GAME to all room players
+    if (room) {
+        broadcastToRoom(room, {
+            type: START_GAME,
+            slotAssignments: gameResult.slotAssignments,
+            hostId: hostSid,
+            settings: room.settings
         });
     }
 
-    // Update spectators
-    for (const sid of spectators) {
-        const entry = queue.find(q => q.sessionId === sid);
-        if (entry) {
-            send(entry.ws, {
-                type: PICKUP_UPDATE,
-                phase,
-                queuePos: queue.indexOf(entry) + 1,
-                queueLen: queue.length,
-                court: courtStatus
-            });
-        }
+    // Remove these 6 players from the pickup world
+    for (const sid of [...homeSids, ...awaySids]) {
+        worldPlayers.delete(sid);
+    }
+
+    stopBroadcastIfEmpty();
+}
+
+// ─── World State Broadcast ────────────────────────────────
+
+function ensureBroadcasting() {
+    if (!broadcastTimer) {
+        broadcastTimer = setInterval(broadcastWorldState, BROADCAST_MS);
     }
 }
 
-function getCourtStatus() {
-    if (phase === 'playing') {
-        return {
-            state: 'playing',
-            winnersCount: winners.length,
-            queueCount: queue.length
-        };
-    } else if (phase === 'staging') {
-        return {
-            state: 'staging',
-            countdown: stagingCountdown,
-            queueCount: queue.length
-        };
-    } else {
-        return {
-            state: 'waiting',
-            queueCount: queue.length,
-            winnersCount: winners.length
-        };
+function stopBroadcastIfEmpty() {
+    if (worldPlayers.size === 0 && broadcastTimer) {
+        clearInterval(broadcastTimer);
+        broadcastTimer = null;
     }
 }
 
-// ─── AFK Cleanup ───────────────────────────────────────────
+function broadcastWorldState() {
+    if (worldPlayers.size === 0) return;
+
+    // Serialize all players
+    const players = [];
+    for (const [sid, p] of worldPlayers) {
+        players.push({
+            id: sid,
+            n: p.nickname,
+            x: Math.round(p.x * 100) / 100,
+            z: Math.round(p.z * 100) / 100,
+            a: Math.round(p.angle * 100) / 100,
+            t: p.team,
+            q: p.queued
+        });
+    }
+
+    // Queue rosters (nicknames for HUD display)
+    const hq = homeQueue.map(sid => worldPlayers.get(sid)?.nickname || '?');
+    const aq = awayQueue.map(sid => worldPlayers.get(sid)?.nickname || '?');
+
+    const raw = JSON.stringify({
+        type: PICKUP_WORLD_STATE,
+        p: players,
+        hq,
+        aq,
+        cd: countdown
+    });
+
+    for (const p of worldPlayers.values()) {
+        if (p.ws?.readyState === 1) p.ws.send(raw);
+    }
+}
+
+// ─── AFK Cleanup ──────────────────────────────────────────
 
 export function cleanupAfkPlayers() {
     const now = Date.now();
     let removed = false;
 
-    for (let i = queue.length - 1; i >= 0; i--) {
-        if (now - queue[i].lastHeartbeat > AFK_TIMEOUT) {
-            send(queue[i].ws, { type: ERROR, message: 'Removed from pickup queue (AFK).' });
-            queue.splice(i, 1);
+    for (const [sid, p] of worldPlayers) {
+        if (now - p.lastHeartbeat > AFK_TIMEOUT) {
+            leaveZoneInternal(sid);
+            worldPlayers.delete(sid);
+            send(p.ws, { type: ERROR, message: 'Removed from pickup world (AFK).' });
             removed = true;
         }
     }
 
-    if (removed) broadcastQueueUpdate();
+    if (removed) stopBroadcastIfEmpty();
 }
 
 export function refreshPickupHeartbeat(sessionId) {
-    const entry = queue.find(q => q.sessionId === sessionId);
-    if (entry) entry.lastHeartbeat = Date.now();
+    const p = worldPlayers.get(sessionId);
+    if (p) p.lastHeartbeat = Date.now();
 }
 
-// ─── Query ─────────────────────────────────────────────────
+// ─── Disconnect Handling ──────────────────────────────────
 
-export function getPickupStatus() {
-    return {
-        phase,
-        queueLength: queue.length,
-        winnersCount: winners.length,
-        court: getCourtStatus()
-    };
+export function handlePickupDisconnect(sessionId) {
+    leavePickupWorld(sessionId);
 }
 
-export function isInPickup(sessionId) {
-    return queue.some(q => q.sessionId === sessionId) ||
-           winners.some(w => w.sessionId === sessionId);
+// ─── Query ────────────────────────────────────────────────
+
+export function isInPickupWorld(sessionId) {
+    return worldPlayers.has(sessionId);
 }

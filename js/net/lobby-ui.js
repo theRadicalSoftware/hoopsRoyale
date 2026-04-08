@@ -15,8 +15,9 @@ let isHost = false;
 let scoreTarget = 21;
 let isPublic = true;
 
-// Callback set by main.js when game should start
+// Callbacks set by main.js
 let onGameStart = null;
+let onPickupEnter = null;
 
 // ─── DOM Refs ──────────────────────────────────────────────
 const els = {};
@@ -85,8 +86,9 @@ function cacheElements() {
 }
 
 // ─── Init (called once from main.js) ──────────────────────
-export function initLobbyUI(gameStartCallback) {
+export function initLobbyUI(gameStartCallback, pickupEnterCallback) {
     onGameStart = gameStartCallback;
+    onPickupEnter = pickupEnterCallback || null;
     cacheElements();
     bindEvents();
     loadSavedNickname();
@@ -204,6 +206,7 @@ function bindEvents() {
     connection.on(MSG.DISCONNECTED, handlePlayerDisconnected);
     connection.on(MSG.PICKUP_UPDATE, handlePickupUpdate);
     connection.on(MSG.PICKUP_MATCH, handlePickupMatch);
+    connection.on(MSG.PICKUP_ENTER_WORLD, handlePickupEnterWorld);
 
     // Connection lifecycle
     connection.onConnect = (reconnected) => {
@@ -508,13 +511,20 @@ function handlePickupUpdate(msg) {
 }
 
 function handlePickupMatch(msg) {
-    // We've been matched into a pickup game — this triggers the game start flow
-    // The START_GAME message will follow from the server after staging countdown
+    // Legacy handler — kept for backwards compatibility
     els.pickupQueuePos.classList.remove('active');
     els.pickupJoinBtn.style.display = 'none';
-
-    // Show staging info
     els.pickupCourtInfo.textContent = `You're on ${msg.team === 'home' ? 'Home' : 'Away'} team, slot ${msg.slot + 1}`;
+}
+
+function handlePickupEnterWorld(msg) {
+    if (!msg.ok) return;
+    // Server confirmed entry into pickup world — hide lobby, enter 3D world
+    hideLobby();
+    els.connStatus.classList.add('active'); // keep connection indicator visible
+    if (onPickupEnter) {
+        onPickupEnter({ mySessionId });
+    }
 }
 
 // ─── Game Start ────────────────────────────────────────────
