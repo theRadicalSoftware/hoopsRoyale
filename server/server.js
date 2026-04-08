@@ -11,9 +11,9 @@ import {
     handleDisconnect, broadcastToRoom, getRoomForSession, serializeRoom
 } from './rooms.js';
 import {
-    joinPickupQueue, leavePickupQueue, handlePickupDisconnect,
-    handlePickupGameOver, cleanupAfkPlayers, refreshPickupHeartbeat,
-    isInPickup
+    enterPickupWorld, leavePickupWorld, updatePickupPosition,
+    enterPickupZone, leavePickupZone, handlePickupDisconnect,
+    cleanupAfkPlayers, refreshPickupHeartbeat, isInPickupWorld
 } from './pickup.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -268,16 +268,35 @@ wss.on('connection', (ws) => {
             return;
         }
 
-        // ── JOIN_PICKUP ─────────────────────────────────
+        // ── JOIN_PICKUP (enter pickup world) ────────────
         if (type === MSG.JOIN_PICKUP) {
             const session = sessions.get(sessionId);
-            joinPickupQueue(sessionId, session.nickname, ws);
+            enterPickupWorld(sessionId, session.nickname, ws);
+            send(ws, { type: MSG.PICKUP_ENTER_WORLD, ok: true });
             return;
         }
 
-        // ── LEAVE_PICKUP ────────────────────────────────
+        // ── LEAVE_PICKUP (leave pickup world) ───────────
         if (type === MSG.LEAVE_PICKUP) {
-            leavePickupQueue(sessionId);
+            leavePickupWorld(sessionId);
+            return;
+        }
+
+        // ── PICKUP_POSITION ─────────────────────────────
+        if (type === MSG.PICKUP_POSITION) {
+            updatePickupPosition(sessionId, msg.x || 0, msg.z || 0, msg.a || 0);
+            return;
+        }
+
+        // ── PICKUP_ZONE_ENTER ───────────────────────────
+        if (type === MSG.PICKUP_ZONE_ENTER) {
+            enterPickupZone(sessionId, msg.team);
+            return;
+        }
+
+        // ── PICKUP_ZONE_LEAVE ───────────────────────────
+        if (type === MSG.PICKUP_ZONE_LEAVE) {
+            leavePickupZone(sessionId);
             return;
         }
 

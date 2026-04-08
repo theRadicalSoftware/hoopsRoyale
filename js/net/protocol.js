@@ -27,6 +27,14 @@ export const GAME_STATE      = 'GAME_STATE';
 export const GAME_ACTION     = 'GAME_ACTION';
 export const GAME_OVER       = 'GAME_OVER';
 
+// Pickup World
+export const PICKUP_ENTER_WORLD  = 'PICKUP_ENTER_WORLD';
+export const PICKUP_LEAVE_WORLD  = 'PICKUP_LEAVE_WORLD';
+export const PICKUP_POSITION     = 'PICKUP_POSITION';
+export const PICKUP_WORLD_STATE  = 'PICKUP_WORLD_STATE';
+export const PICKUP_ZONE_ENTER   = 'PICKUP_ZONE_ENTER';
+export const PICKUP_ZONE_LEAVE   = 'PICKUP_ZONE_LEAVE';
+
 // Connection
 export const PING            = 'PING';
 export const PONG            = 'PONG';
