@@ -1,4 +1,6 @@
 node_modules/
 .codex
+.claude/
 agent.local.md
 CLAUDE.local.md
+server/tunnel.sh
