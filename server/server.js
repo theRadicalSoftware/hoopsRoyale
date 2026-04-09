@@ -13,12 +13,21 @@ import {
 import {
     enterPickupWorld, leavePickupWorld, updatePickupPosition,
     enterPickupZone, leavePickupZone, handlePickupDisconnect,
-    cleanupAfkPlayers, refreshPickupHeartbeat, isInPickupWorld
+    cleanupAfkPlayers, refreshPickupHeartbeat, isInPickupWorld,
+    forwardGameStateToSpectators, handlePickupGameOver,
+    isActivePickupGameHost, getPickupWorldStatus,
+    broadcastPickupChat
 } from './pickup.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, '..');
 const PORT = parseInt(process.env.PORT || '8080', 10);
+
+// ─── Security: static file whitelist ───────────────────────
+// Only serve index.html and the js/ directory — blocks access to
+// .git/, server/ source, CLAUDE.md, config files, etc.
+const INDEX_HTML_PATH = join(PROJECT_ROOT, 'index.html');
+const JS_DIR_PREFIX  = join(PROJECT_ROOT, 'js') + '/';
 
 // ─── MIME Types ─────────────────────────────────────────────
 const MIME = {
@@ -54,6 +63,13 @@ const httpServer = http.createServer(async (req, res) => {
         return;
     }
 
+    // Security: only serve game assets (index.html + js/ directory)
+    if (filePath !== INDEX_HTML_PATH && !filePath.startsWith(JS_DIR_PREFIX)) {
+        res.writeHead(404);
+        res.end('Not Found');
+        return;
+    }
+
     try {
         const data = await readFile(filePath);
         const ext = extname(filePath).toLowerCase();
@@ -70,10 +86,17 @@ const httpServer = http.createServer(async (req, res) => {
 });
 
 // ─── WebSocket Server ───────────────────────────────────────
-const wss = new WebSocketServer({ server: httpServer });
+const wss = new WebSocketServer({
+    server: httpServer,
+    maxPayload: 32 * 1024   // 32 KB max message size
+});
 
 // Session tracking: sessionId → { ws, nickname, roomCode }
 const sessions = new Map();
+
+// ─── Security Limits ───────────────────────────────────────
+const MAX_CONNECTIONS   = 100;  // total simultaneous WebSocket connections
+const RATE_LIMIT_PER_SEC = 120; // max messages per connection per second
 
 function send(ws, msg) {
     if (ws.readyState === 1) {
@@ -82,9 +105,25 @@ function send(ws, msg) {
 }
 
 wss.on('connection', (ws) => {
+    // Reject if server is full
+    if (wss.clients.size > MAX_CONNECTIONS) {
+        ws.close(1013, 'Server is full');
+        return;
+    }
+
     let sessionId = null;
+    let msgCount = 0;
+    let msgWindowStart = Date.now();
 
     ws.on('message', (raw) => {
+        // Rate limiting: silently drop excess messages
+        const now = Date.now();
+        if (now - msgWindowStart > 1000) {
+            msgCount = 0;
+            msgWindowStart = now;
+        }
+        if (++msgCount > RATE_LIMIT_PER_SEC) return;
+
         let msg;
         try {
             msg = JSON.parse(raw);
@@ -243,9 +282,13 @@ wss.on('connection', (ws) => {
             return;
         }
 
-        // ── GAME_STATE (host → relay to guests) ─────────
+        // ── GAME_STATE (host → relay to guests + spectators) ──
         if (type === MSG.GAME_STATE) {
             relayFromHost(sessionId, msg);
+            // If this is a pickup game, forward to world spectators
+            if (isActivePickupGameHost(sessionId)) {
+                forwardGameStateToSpectators(msg);
+            }
             return;
         }
 
@@ -255,16 +298,26 @@ wss.on('connection', (ws) => {
             return;
         }
 
-        // ── GAME_OVER (host → relay + reset room) ───────
+        // ── GAME_OVER (host → relay + reset room + cleanup) ──
         if (type === MSG.GAME_OVER) {
             relayFromHost(sessionId, msg);
             endGame(sessionId, msg.winner);
+            // Clean up spectator feed if this was a pickup game
+            if (isActivePickupGameHost(sessionId)) {
+                handlePickupGameOver();
+            }
             return;
         }
 
         // ── PLAYER_INPUT (guest → relay to host) ────────
         if (type === MSG.PLAYER_INPUT) {
             relayInputToHost(sessionId, msg);
+            return;
+        }
+
+        // ── PICKUP_UPDATE (lobby status query) ──────────
+        if (type === MSG.PICKUP_UPDATE) {
+            send(ws, { type: MSG.PICKUP_UPDATE, ...getPickupWorldStatus() });
             return;
         }
 
@@ -284,7 +337,7 @@ wss.on('connection', (ws) => {
 
         // ── PICKUP_POSITION ─────────────────────────────
         if (type === MSG.PICKUP_POSITION) {
-            updatePickupPosition(sessionId, msg.x || 0, msg.z || 0, msg.a || 0);
+            updatePickupPosition(sessionId, msg.x || 0, msg.z || 0, msg.a || 0, msg.y, msg.mb, msg.wc, msg.g, msg.j, msg.s);
             return;
         }
 
@@ -297,6 +350,14 @@ wss.on('connection', (ws) => {
         // ── PICKUP_ZONE_LEAVE ───────────────────────────
         if (type === MSG.PICKUP_ZONE_LEAVE) {
             leavePickupZone(sessionId);
+            return;
+        }
+
+        // ── PICKUP_CHAT ────────────────────────────────
+        if (type === MSG.PICKUP_CHAT) {
+            const text = (msg.text || '').slice(0, 200).trim();
+            if (!text) return;
+            broadcastPickupChat(sessionId, text);
             return;
         }
 

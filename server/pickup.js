@@ -13,7 +13,8 @@ import {
     getRoomForSession, broadcastToRoom
 } from './rooms.js';
 import {
-    PICKUP_WORLD_STATE, PICKUP_ENTER_WORLD, START_GAME, ERROR
+    PICKUP_WORLD_STATE, PICKUP_ENTER_WORLD, PICKUP_GAME_STATE,
+    PICKUP_CHAT, START_GAME, ERROR
 } from './protocol.js';
 
 // ─── Constants ─────────────────────────────────────────────
@@ -33,6 +34,13 @@ const awayQueue = [];   // ordered sessionIds queued for away (+Z gate)
 let countdown = -1;           // seconds remaining, -1 = inactive
 let countdownTimer = null;
 let broadcastTimer = null;
+
+// ─── Active Game (spectator feed) ────────────────────────
+// When a pickup game is running on the court, spectators in the
+// world can watch the action live. This tracks the active game
+// so we can relay simplified state to spectators at 30Hz.
+// slotMap indices match GAME_STATE player array: [home0-2, away0-2]
+let activeGame = null; // { roomCode, hostSid, slotMap: [sid...], nicknames: [name...] }
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -55,12 +63,21 @@ export function enterPickupWorld(sessionId, nickname, ws) {
         return;
     }
 
+    // Spawn at a random park point outside the court fence
+    const spawns = [
+        [-10,-24],[10,-24],[-10,24],[10,24],
+        [-16,-8],[16,-8],[-16,8],[16,8],[0,-28],[0,28]
+    ];
+    const sp = spawns[Math.floor(Math.random() * spawns.length)];
+
     worldPlayers.set(sessionId, {
         ws,
         nickname,
-        x: 0,
-        z: -28,
-        angle: 0,
+        x: sp[0],
+        z: sp[1],
+        y: -0.265,
+        angle: Math.atan2(-sp[0], -sp[1]),
+        mb: 0, wc: 0, g: 1, j: 0, s: 0,
         team: null,
         queued: false,
         lastHeartbeat: Date.now()
@@ -77,12 +94,18 @@ export function leavePickupWorld(sessionId) {
 
 // ─── Position Updates ─────────────────────────────────────
 
-export function updatePickupPosition(sessionId, x, z, angle) {
+export function updatePickupPosition(sessionId, x, z, angle, y, mb, wc, g, j, s) {
     const p = worldPlayers.get(sessionId);
     if (!p) return;
     p.x = x;
     p.z = z;
     p.angle = angle;
+    p.y = y ?? p.y;
+    p.mb = mb ?? 0;
+    p.wc = wc ?? 0;
+    p.g = g ?? 1;
+    p.j = j ?? 0;
+    p.s = s ?? 0;
     p.lastHeartbeat = Date.now();
 }
 
@@ -211,12 +234,23 @@ function launchPickupGame() {
         });
     }
 
-    // Remove these 6 players from the pickup world
-    for (const sid of [...homeSids, ...awaySids]) {
-        worldPlayers.delete(sid);
+    // Mark game players as in-game — they stay in worldPlayers so we
+    // can look up nicknames, but are excluded from world broadcasts.
+    // Spectators see them on the court via PICKUP_GAME_STATE instead.
+    const allGameSids = [...homeSids, ...awaySids];
+    for (const sid of allGameSids) {
+        const p = worldPlayers.get(sid);
+        if (p) p.inGame = true;
     }
 
-    stopBroadcastIfEmpty();
+    activeGame = {
+        roomCode: code,
+        hostSid,
+        slotMap: allGameSids,
+        nicknames: allGameSids.map(sid => worldPlayers.get(sid)?.nickname || '?')
+    };
+
+    ensureBroadcasting();
 }
 
 // ─── World State Broadcast ────────────────────────────────
@@ -237,15 +271,23 @@ function stopBroadcastIfEmpty() {
 function broadcastWorldState() {
     if (worldPlayers.size === 0) return;
 
-    // Serialize all players
+    // Serialize world players — exclude those in an active game
+    // (they're rendered on the court from PICKUP_GAME_STATE instead)
     const players = [];
     for (const [sid, p] of worldPlayers) {
+        if (p.inGame) continue;
         players.push({
             id: sid,
             n: p.nickname,
             x: Math.round(p.x * 100) / 100,
             z: Math.round(p.z * 100) / 100,
             a: Math.round(p.angle * 100) / 100,
+            y: Math.round((p.y ?? -0.265) * 1000) / 1000,
+            mb: Math.round((p.mb ?? 0) * 100) / 100,
+            wc: Math.round((p.wc ?? 0) * 100) / 100,
+            g: p.g ?? 1,
+            j: p.j ?? 0,
+            s: p.s ?? 0,
             t: p.team,
             q: p.queued
         });
@@ -260,10 +302,13 @@ function broadcastWorldState() {
         p: players,
         hq,
         aq,
-        cd: countdown
+        cd: countdown,
+        ga: !!activeGame     // flag: is a game active on the court?
     });
 
+    // Send only to spectators (not game players)
     for (const p of worldPlayers.values()) {
+        if (p.inGame) continue;
         if (p.ws?.readyState === 1) p.ws.send(raw);
     }
 }
@@ -275,6 +320,7 @@ export function cleanupAfkPlayers() {
     let removed = false;
 
     for (const [sid, p] of worldPlayers) {
+        if (p.inGame) continue; // game players don't send position heartbeats
         if (now - p.lastHeartbeat > AFK_TIMEOUT) {
             leaveZoneInternal(sid);
             worldPlayers.delete(sid);
@@ -297,8 +343,115 @@ export function handlePickupDisconnect(sessionId) {
     leavePickupWorld(sessionId);
 }
 
+// ─── Spectator Feed ──────────────────────────────────────
+// Extracts simplified positions from the host's GAME_STATE and
+// forwards a compact PICKUP_GAME_STATE to all spectators in the
+// pickup world. Spectator clients render game players on the
+// court alongside the regular world players walking around.
+
+export function forwardGameStateToSpectators(msg) {
+    if (!activeGame) return;
+
+    const gamePlayers = msg.p || [];
+
+    // Build compact spectator view: [x, z, angle, nickname] per player
+    const gp = [];
+    for (let i = 0; i < 6; i++) {
+        const sp = gamePlayers[i];
+        if (sp && sp.p) {
+            gp.push([
+                Math.round(sp.p[0] * 100) / 100,
+                Math.round(sp.p[2] * 100) / 100,
+                Math.round((sp.fa || sp.r || 0) * 100) / 100,
+                activeGame.nicknames[i]
+            ]);
+        } else {
+            gp.push(null);
+        }
+    }
+
+    const spectatorMsg = JSON.stringify({
+        type: PICKUP_GAME_STATE,
+        gp,
+        b: msg.b?.p ? [
+            Math.round(msg.b.p[0] * 100) / 100,
+            Math.round(msg.b.p[1] * 100) / 100,
+            Math.round(msg.b.p[2] * 100) / 100
+        ] : null,
+        sc: msg.s ? [msg.s.h || 0, msg.s.a || 0] : [0, 0]
+    });
+
+    for (const p of worldPlayers.values()) {
+        if (p.inGame) continue;
+        if (p.ws?.readyState === 1) p.ws.send(spectatorMsg);
+    }
+}
+
+export function handlePickupGameOver() {
+    if (!activeGame) return;
+
+    // Send "game ended" signal to all spectators
+    const endMsg = JSON.stringify({
+        type: PICKUP_GAME_STATE,
+        gp: null, b: null, sc: null
+    });
+    for (const p of worldPlayers.values()) {
+        if (p.inGame) continue;
+        if (p.ws?.readyState === 1) p.ws.send(endMsg);
+    }
+
+    // Remove game players from the world — they're now managed by the room system
+    for (const sid of activeGame.slotMap) {
+        worldPlayers.delete(sid);
+    }
+
+    activeGame = null;
+    stopBroadcastIfEmpty();
+}
+
+export function isActivePickupGameHost(sessionId) {
+    return activeGame !== null && activeGame.hostSid === sessionId;
+}
+
 // ─── Query ────────────────────────────────────────────────
 
 export function isInPickupWorld(sessionId) {
     return worldPlayers.has(sessionId);
+}
+
+/**
+ * Returns a snapshot of the pickup world for the lobby panel.
+ * Lightweight — no per-player positions, just counts and status.
+ */
+export function getPickupWorldStatus() {
+    let worldCount = 0;
+    for (const p of worldPlayers.values()) {
+        if (!p.inGame) worldCount++;
+    }
+
+    return {
+        players: worldCount,
+        homeQueue: homeQueue.length,
+        awayQueue: awayQueue.length,
+        countdown: countdown,
+        gameActive: !!activeGame
+    };
+}
+
+// ─── Pickup World Chat ───────────────────────────────────────
+
+export function broadcastPickupChat(sessionId, text) {
+    const p = worldPlayers.get(sessionId);
+    if (!p) return;
+
+    const msg = JSON.stringify({
+        type: PICKUP_CHAT,
+        from: p.nickname,
+        text
+    });
+
+    for (const wp of worldPlayers.values()) {
+        if (wp.inGame) continue;
+        if (wp.ws?.readyState === 1) wp.ws.send(msg);
+    }
 }

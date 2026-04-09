@@ -8,6 +8,7 @@ import * as MSG from './protocol.js';
 // ─── State ─────────────────────────────────────────────────
 let currentTab = 'quick-match';
 let roomListTimer = null;
+let pickupStatusTimer = null;
 let isInRoom = false;
 let currentRoom = null;
 let mySessionId = null;
@@ -54,12 +55,12 @@ function cacheElements() {
     els.cmCreateBtn   = document.getElementById('cm-create-btn');
 
     // Pickup
-    els.pickupCourtInfo  = document.getElementById('pickup-court-info');
-    els.pickupQueueCount = document.getElementById('pickup-queue-count');
+    els.pickupWorldCount = document.getElementById('pickup-world-count');
+    els.pickupCourtStatus = document.getElementById('pickup-court-status');
+    els.pickupLobbyHome  = document.getElementById('pickup-lobby-home');
+    els.pickupLobbyAway  = document.getElementById('pickup-lobby-away');
+    els.pickupLobbyCountdown = document.getElementById('pickup-lobby-countdown');
     els.pickupJoinBtn    = document.getElementById('pickup-join-btn');
-    els.pickupQueuePos   = document.getElementById('pickup-queue-pos');
-    els.pickupQueueNum   = document.getElementById('pickup-queue-pos-num');
-    els.pickupLeaveBtn   = document.getElementById('pickup-leave-btn');
 
     // Waiting Room
     els.waitingRoom   = document.getElementById('mp-waiting-room');
@@ -116,10 +117,12 @@ function showLobby() {
     els.mpLobby.classList.remove('fade-out');
     els.connStatus.classList.add('active');
     startRoomListPolling();
+    if (currentTab === 'pickup') startPickupStatusPolling();
 }
 
 function hideLobby() {
     stopRoomListPolling();
+    stopPickupStatusPolling();
     els.mpLobby.classList.add('fade-out');
     setTimeout(() => {
         els.mpLobby.classList.remove('active', 'fade-out');
@@ -181,7 +184,6 @@ function bindEvents() {
 
     // Pickup
     els.pickupJoinBtn.addEventListener('click', handleJoinPickup);
-    els.pickupLeaveBtn.addEventListener('click', handleLeavePickup);
 
     // Waiting Room
     els.wrCodeCopy.addEventListener('click', handleCopyCode);
@@ -252,6 +254,13 @@ function switchTab(tabId) {
 
     if (tabId === 'quick-match') {
         requestRoomList();
+    }
+
+    // Start/stop pickup status polling based on tab
+    if (tabId === 'pickup') {
+        startPickupStatusPolling();
+    } else {
+        stopPickupStatusPolling();
     }
 }
 
@@ -481,40 +490,64 @@ function clearChat() {
 // ─── Pickup ────────────────────────────────────────────────
 function handleJoinPickup() {
     connection.send({ type: MSG.JOIN_PICKUP });
-    els.pickupJoinBtn.style.display = 'none';
-    els.pickupQueuePos.classList.add('active');
 }
 
-function handleLeavePickup() {
-    connection.send({ type: MSG.LEAVE_PICKUP });
-    els.pickupJoinBtn.style.display = '';
-    els.pickupQueuePos.classList.remove('active');
+function requestPickupStatus() {
+    if (connection.connected) {
+        connection.send({ type: MSG.PICKUP_UPDATE });
+    }
+}
+
+function startPickupStatusPolling() {
+    stopPickupStatusPolling();
+    requestPickupStatus();
+    pickupStatusTimer = setInterval(requestPickupStatus, 3000);
+}
+
+function stopPickupStatusPolling() {
+    if (pickupStatusTimer) {
+        clearInterval(pickupStatusTimer);
+        pickupStatusTimer = null;
+    }
 }
 
 function handlePickupUpdate(msg) {
-    // Update court status
-    const court = msg.court || {};
-    if (court.state === 'playing') {
-        els.pickupCourtInfo.textContent = 'Game in progress';
-    } else if (court.state === 'staging') {
-        els.pickupCourtInfo.textContent = `Starting in ${msg.countdown || court.countdown || '...'}s`;
-    } else {
-        els.pickupCourtInfo.textContent = 'Waiting for players';
+    // World player count
+    const count = msg.players || 0;
+    if (els.pickupWorldCount) {
+        els.pickupWorldCount.textContent = count > 0 ? count : '—';
     }
 
-    els.pickupQueueCount.textContent = `${msg.queueLen || court.queueCount || 0} in line`;
+    // Court status
+    if (els.pickupCourtStatus) {
+        if (msg.gameActive) {
+            els.pickupCourtStatus.textContent = 'Live';
+            els.pickupCourtStatus.className = 'pickup-stat-value game-live';
+        } else {
+            els.pickupCourtStatus.textContent = 'Open';
+            els.pickupCourtStatus.className = 'pickup-stat-value game-waiting';
+        }
+    }
 
-    // Update queue position
-    if (msg.queuePos) {
-        els.pickupQueueNum.textContent = `#${msg.queuePos}`;
+    // Queue fill
+    const hq = msg.homeQueue || 0;
+    const aq = msg.awayQueue || 0;
+    if (els.pickupLobbyHome) els.pickupLobbyHome.textContent = `${hq}/3`;
+    if (els.pickupLobbyAway) els.pickupLobbyAway.textContent = `${aq}/3`;
+
+    // Countdown
+    if (els.pickupLobbyCountdown) {
+        if (msg.countdown > 0) {
+            els.pickupLobbyCountdown.textContent = `Starting in ${msg.countdown}s`;
+            els.pickupLobbyCountdown.classList.add('active');
+        } else {
+            els.pickupLobbyCountdown.classList.remove('active');
+        }
     }
 }
 
 function handlePickupMatch(msg) {
-    // Legacy handler — kept for backwards compatibility
-    els.pickupQueuePos.classList.remove('active');
-    els.pickupJoinBtn.style.display = 'none';
-    els.pickupCourtInfo.textContent = `You're on ${msg.team === 'home' ? 'Home' : 'Away'} team, slot ${msg.slot + 1}`;
+    // Legacy handler — no longer used with immersive world
 }
 
 function handlePickupEnterWorld(msg) {

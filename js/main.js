@@ -12,6 +12,8 @@ import { initLobbyUI, showNicknamePrompt } from './net/lobby-ui.js';
 import { startHostSync, stopHostSync, getRemoteInput, getSlotAssignments, getSessionForSlot, broadcastAction, broadcastGameOver, isHostSyncActive } from './net/host-sync.js';
 import { startGuestSync, stopGuestSync, setLocalInput, getInterpolatedState, getLatestSnapshot, getMyPlayerIndex, isGuestSyncActive } from './net/guest-sync.js';
 import { startPickupSync, stopPickupSync, setPosition as setPickupPosition, enterZone as pickupEnterZone, leaveZone as pickupLeaveZone, sendLeavePickup, isPickupSyncActive, getMyTeam as getPickupMyTeam, getMySessionId as getPickupMySessionId } from './net/pickup-sync.js';
+import connection from './net/connection.js';
+import { PICKUP_CHAT } from './net/protocol.js';
 
 // ─── Renderer ───────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -133,6 +135,7 @@ const SHOOT_TURN_DECEL  = 14.0;       // ramp-down rate (quick, precise stop)
 // ─── Pickup World (immersive lobby) ─────────────────────
 let pickupWorldActive = false;
 let pickupWorldSessionId = null;
+let pickupPlayerIndicator = null; // THREE.Group for local player foot ring
 const pickupRemotePlayers = new Map(); // sessionId → { playerData, nametag, targetX, targetZ, targetAngle, teamColor }
 let pickupZoneHome = null;   // THREE.Group for home queue zone
 let pickupZoneAway = null;   // THREE.Group for away queue zone
@@ -148,7 +151,28 @@ let pickupMyZone = null; // null | 'home' | 'away'
 const PICKUP_ZONE_HOME_POS = new THREE.Vector3(0, 0, -22);
 const PICKUP_ZONE_AWAY_POS = new THREE.Vector3(0, 0, 22);
 const PICKUP_ZONE_RADIUS = 3.0;
-const PICKUP_SPAWN_POS = { x: 5, z: -18 };
+// Park spawn points — outside the court fence, along paths and open areas
+const PICKUP_SPAWN_POINTS = [
+    { x: -10, z: -24 },   // behind -Z gate, left side
+    { x:  10, z: -24 },   // behind -Z gate, right side
+    { x: -10, z:  24 },   // behind +Z gate, left side
+    { x:  10, z:  24 },   // behind +Z gate, right side
+    { x: -16, z:  -8 },   // left sideline, near bench
+    { x:  16, z:  -8 },   // right sideline, near bench
+    { x: -16, z:   8 },   // left sideline, far end
+    { x:  16, z:   8 },   // right sideline, far end
+    { x:   0, z: -28 },   // on path behind -Z gate
+    { x:   0, z:  28 },   // on path behind +Z gate
+];
+
+// ─── Spectator Feed (watch active court game from the world) ──
+// When a pickup game is running, spectators see the 6 game
+// players on the court + the basketball as live entities.
+const pickupGameEntities = []; // index 0-5 → { playerData, nametag, targetX, targetZ, targetAngle } | null
+let pickupGameBall = null;     // { mesh } — spectator ball visual (no physics)
+let pickupGameScores = null;   // [home, away] or null
+let pickupGameActive = false;
+const BALL_RADIUS = 0.1193;    // match ball.js
 
 // ─── Pickup Assist ───────────────────────────────────────
 const PICKUP_ASSIST_DURATION = 0.24;
@@ -343,11 +367,13 @@ let parkSeats = [];
 let playerColliders = [];
 let rimSensors = [];
 const playerInput = { forward: false, backward: false, left: false, right: false, jump: false };
+const cameraInput = { pitchUp: false, pitchDown: false, rotateLeft: false, rotateRight: false };
 const shootInput = { aimUp: false, aimDown: false, turnLeft: false, turnRight: false };
 let blockHeld = false;
 
 // ─── Zero-allocation input reset helpers ────────────────────
 function resetPlayerInput() { playerInput.forward = playerInput.backward = playerInput.left = playerInput.right = playerInput.jump = false; }
+function resetCameraInput() { cameraInput.pitchUp = cameraInput.pitchDown = cameraInput.rotateLeft = cameraInput.rotateRight = false; }
 function resetShootInput() { shootInput.aimUp = shootInput.aimDown = shootInput.turnLeft = shootInput.turnRight = false; }
 function resetMoveState() { moveState.forward = moveState.backward = moveState.left = moveState.right = moveState.up = moveState.down = false; }
 const animatedNets = [];
@@ -361,6 +387,8 @@ const cachedSunChildren = [];   // child meshes of sun
 
 // ─── Persistent carryState (avoids per-frame object allocation) ──
 const _carryState = { holding: false, shooting: false, dribbling: false, dribblePhase: 0, dunking: false, hanging: false, seated: false, seatSettled: false, blocking: false };
+const _idleInput = { forward: false, backward: false, left: false, right: false, jump: false };
+const _remoteSeatedCarry = { holding: false, shooting: false, dribbling: false, dribblePhase: 0, dunking: false, hanging: false, seated: true, seatSettled: true, blocking: false };
 
 const freeRoamForward = new THREE.Vector3();
 const freeRoamRight = new THREE.Vector3();
@@ -368,6 +396,13 @@ const freeRoamVelocity = new THREE.Vector3();
 const freeRoamLookDir = new THREE.Vector3();
 const freeRoamLookTarget = new THREE.Vector3();
 const playerCameraTarget = new THREE.Vector3();
+const _camOffset = new THREE.Vector3();
+const _camSpherical = new THREE.Spherical();
+// Persistent player-mode camera orbit (prevents drift)
+let _playerCamTheta = 0;       // azimuthal angle (horizontal orbit)
+let _playerCamPhi = 0.72;      // polar angle (pitch from Y axis)
+let _camThetaVel = 0;          // smoothed angular velocity (horizontal)
+let _camPhiVel = 0;            // smoothed angular velocity (vertical)
 const worldUp = new THREE.Vector3(0, 1, 0);
 const playerMoveForward = new THREE.Vector3();
 const playerMoveRight = new THREE.Vector3();
@@ -1639,12 +1674,14 @@ function enterPickupWorld() {
     matchLive = false;
     blockHeld = false;
 
-    // Make player visible and position at spawn
+    // Make player visible and position at a random park spawn
     playerData.group.visible = true;
     const groundedY = -(playerData.visualGroundOffsetY || 0.265);
-    playerData.group.position.set(PICKUP_SPAWN_POS.x, groundedY, PICKUP_SPAWN_POS.z);
-    playerData.facingAngle = 0;
-    playerData.group.rotation.y = 0;
+    const spawn = PICKUP_SPAWN_POINTS[Math.floor(Math.random() * PICKUP_SPAWN_POINTS.length)];
+    playerData.group.position.set(spawn.x, groundedY, spawn.z);
+    // Face toward court center
+    playerData.facingAngle = Math.atan2(-spawn.x, -spawn.z);
+    playerData.group.rotation.y = playerData.facingAngle;
     playerData.velocity.set(0, 0, 0);
     playerData.velocityY = 0;
     playerData.isGrounded = true;
@@ -1652,19 +1689,29 @@ function enterPickupWorld() {
     playerData.stamina = 100;
     playerData.speedMultiplier = 1.0;
 
+    // Set jersey to neutral gray (not queued yet)
+    setLocalJerseyColor(0x777777);
+
     // Create queue zones if not done yet
     if (!pickupZonesCreated) createPickupQueueZones();
     setPickupZonesVisible(true);
 
+    // Create player foot indicator if needed
+    if (!pickupPlayerIndicator) pickupPlayerIndicator = createPickupPlayerIndicator();
+
     // Start network sync
     startPickupSync({
         mySessionId: pickupWorldSessionId,
-        onWorldState: handlePickupWorldState
+        onWorldState: handlePickupWorldState,
+        onGameState: handlePickupGameState
     });
 
     // Show pickup HUD, switch camera
     const pickupHud = document.getElementById('pickup-world-hud');
     if (pickupHud) pickupHud.classList.remove('hud-hidden');
+    const exitBtn = document.querySelector('.pickup-exit-btn');
+    if (exitBtn) exitBtn.style.display = '';
+    showPickupChat();
     switchCameraMode('player');
     updatePickupQueueHUD();
 }
@@ -1672,6 +1719,9 @@ function enterPickupWorld() {
 function cleanupPickupWorld() {
     pickupWorldActive = false;
     pickupMyZone = null;
+
+    // Restore jersey to default red
+    setLocalJerseyColor(TEAMMATE_JERSEY_COLOR);
 
     // Stop network sync
     stopPickupSync();
@@ -1682,12 +1732,18 @@ function cleanupPickupWorld() {
     }
     pickupRemotePlayers.clear();
 
+    // Clean up spectator game entities
+    cleanupPickupGameEntities();
+
     // Hide zones
     setPickupZonesVisible(false);
 
     // Hide pickup HUD
     const pickupHud = document.getElementById('pickup-world-hud');
     if (pickupHud) pickupHud.classList.add('hud-hidden');
+    const exitBtn = document.querySelector('.pickup-exit-btn');
+    if (exitBtn) exitBtn.style.display = 'none';
+    hidePickupChat();
 }
 
 function exitPickupWorldToMenu() {
@@ -1697,6 +1753,186 @@ function exitPickupWorldToMenu() {
     gameStarted = false;
     playerData.group.visible = false;
     showModeSelect();
+}
+
+// ─── Player Foot Indicator (pickup world only, local player) ──
+
+function createPickupPlayerIndicator() {
+    const group = new THREE.Group();
+
+    // Outer ring — subtle warm glow
+    const outerMat = new THREE.MeshBasicMaterial({
+        color: 0xffaa55,
+        transparent: true,
+        opacity: 0.35,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending
+    });
+    const outerRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.42, 0.50, 48),
+        outerMat
+    );
+    outerRing.rotation.x = -Math.PI / 2;
+    outerRing.renderOrder = 996;
+    group.add(outerRing);
+
+    // Inner ring — brighter accent
+    const innerMat = new THREE.MeshBasicMaterial({
+        color: 0xffd090,
+        transparent: true,
+        opacity: 0.22,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending
+    });
+    const innerRing = new THREE.Mesh(
+        new THREE.RingGeometry(0.34, 0.41, 48),
+        innerMat
+    );
+    innerRing.rotation.x = -Math.PI / 2;
+    innerRing.renderOrder = 996;
+    group.add(innerRing);
+
+    // Soft center fill
+    const fillMat = new THREE.MeshBasicMaterial({
+        color: 0xffcc88,
+        transparent: true,
+        opacity: 0.06,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide
+    });
+    const fill = new THREE.Mesh(
+        new THREE.CircleGeometry(0.34, 32),
+        fillMat
+    );
+    fill.rotation.x = -Math.PI / 2;
+    fill.renderOrder = 995;
+    group.add(fill);
+
+    group.userData.outerMat = outerMat;
+    group.userData.innerMat = innerMat;
+    group.visible = false;
+    scene.add(group);
+    return group;
+}
+
+function updatePickupPlayerIndicator(delta) {
+    if (!pickupPlayerIndicator) return;
+    if (!pickupWorldActive || !playerData?.group?.visible) {
+        pickupPlayerIndicator.visible = false;
+        return;
+    }
+
+    pickupPlayerIndicator.visible = true;
+    const pp = playerData.group.position;
+    pickupPlayerIndicator.position.set(pp.x, 0.03, pp.z);
+
+    // Gentle breathing pulse
+    const t = performance.now() * 0.001;
+    const pulse = 0.3 + Math.sin(t * 1.8) * 0.08;
+    pickupPlayerIndicator.userData.outerMat.opacity = pulse;
+    pickupPlayerIndicator.userData.innerMat.opacity = pulse * 0.6;
+}
+
+// ─── Pickup World Chat ─────────────────────────────────────
+
+let pickupChatInitialized = false;
+const chatNameColors = new Map();
+
+// Warm, readable name color palette — high saturation, good contrast on dark
+const CHAT_NAME_PALETTE = [
+    '#ffb074', '#74d4ff', '#a8e66a', '#ff7eb3', '#ffda5c',
+    '#7ee8d0', '#c49bff', '#ff9d6e', '#69d2e7', '#e8c14a',
+    '#8fd9a8', '#f2808a', '#93c8ff', '#d4a5ff', '#ffcc7a',
+    '#6bcfb8', '#ff8fa0', '#a5d6f7', '#c6e870', '#f5b9d4'
+];
+
+function getChatNameColor(name) {
+    if (chatNameColors.has(name)) return chatNameColors.get(name);
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+        hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+    }
+    const color = CHAT_NAME_PALETTE[Math.abs(hash) % CHAT_NAME_PALETTE.length];
+    chatNameColors.set(name, color);
+    return color;
+}
+
+function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function initPickupChat() {
+    if (pickupChatInitialized) return;
+    pickupChatInitialized = true;
+
+    const chatEl = document.getElementById('pickup-chat');
+    const toggleBtn = document.getElementById('pickup-chat-toggle');
+    const badge = toggleBtn?.querySelector('.chat-badge');
+    const input = document.getElementById('pickup-chat-input');
+    const sendBtn = document.getElementById('pickup-chat-send');
+    const log = document.getElementById('pickup-chat-log');
+
+    toggleBtn?.addEventListener('click', () => {
+        chatEl.classList.toggle('open');
+        if (chatEl.classList.contains('open')) {
+            if (badge) badge.classList.remove('active');
+            input?.focus();
+        }
+    });
+
+    function sendChat() {
+        const text = input?.value.trim();
+        if (!text || !connection.connected) return;
+        connection.send({ type: PICKUP_CHAT, text: text.slice(0, 200) });
+        input.value = '';
+    }
+
+    sendBtn?.addEventListener('click', sendChat);
+    input?.addEventListener('keydown', (e) => {
+        e.stopPropagation(); // prevent game controls from firing
+        if (e.key === 'Enter') sendChat();
+    });
+    input?.addEventListener('keyup', (e) => e.stopPropagation());
+    input?.addEventListener('keypress', (e) => e.stopPropagation());
+
+    // Listen for incoming chat messages
+    connection.on(PICKUP_CHAT, (msg) => {
+        if (!log) return;
+        const from = msg.from || '?';
+        const nameColor = getChatNameColor(from);
+        const msgEl = document.createElement('div');
+        msgEl.className = 'pickup-chat-msg';
+        msgEl.innerHTML = `<span class="chat-name" style="color:${nameColor}">${escapeHtml(from)}</span>${escapeHtml(msg.text || '')}`;
+        log.appendChild(msgEl);
+        log.scrollTop = log.scrollHeight;
+
+        // Trim old messages (keep last 50)
+        while (log.children.length > 50) log.removeChild(log.firstChild);
+
+        // Flash badge if chat is collapsed
+        if (!chatEl.classList.contains('open') && badge) {
+            badge.classList.add('active');
+        }
+    });
+}
+
+function showPickupChat() {
+    initPickupChat();
+    const chatEl = document.getElementById('pickup-chat');
+    if (chatEl) chatEl.style.display = 'flex';
+}
+
+function hidePickupChat() {
+    const chatEl = document.getElementById('pickup-chat');
+    if (chatEl) {
+        chatEl.style.display = 'none';
+        chatEl.classList.remove('open');
+    }
 }
 
 // ─── Queue Zone Visuals ─────────────────────────────────────
@@ -1847,49 +2083,83 @@ function updateZoneSlots(slots, filledCount) {
     }
 }
 
+// ─── Local Player Jersey Color (pickup world) ──────────────
+
+function setLocalJerseyColor(hexColor) {
+    if (!playerData) return;
+    const c = new THREE.Color(hexColor);
+    if (playerData._jerseyMat) playerData._jerseyMat.color.copy(c);
+    if (playerData._headbandMat) playerData._headbandMat.color.copy(c);
+    playerData.jerseyColor = hexColor;
+
+    // Also tint the foot indicator to match team color
+    if (pickupPlayerIndicator) {
+        // Brighten the team color for the additive indicator
+        const indicatorC = new THREE.Color(hexColor).lerp(new THREE.Color(0xffffff), 0.4);
+        if (pickupPlayerIndicator.userData.outerMat) pickupPlayerIndicator.userData.outerMat.color.copy(indicatorC);
+        if (pickupPlayerIndicator.userData.innerMat) pickupPlayerIndicator.userData.innerMat.color.copy(indicatorC);
+    }
+}
+
 // ─── Pickup Zone Proximity Detection ────────────────────────
+
+let _pickupPromptEl = null;
+let _pickupPromptState = null; // track last state to avoid redundant DOM writes
 
 function checkPickupZoneProximity() {
     if (!playerData || !pickupWorldActive) return;
     const px = playerData.group.position.x;
     const pz = playerData.group.position.z;
 
-    const dHome = Math.sqrt(
-        (px - PICKUP_ZONE_HOME_POS.x) ** 2 + (pz - PICKUP_ZONE_HOME_POS.z) ** 2
-    );
-    const dAway = Math.sqrt(
-        (px - PICKUP_ZONE_AWAY_POS.x) ** 2 + (pz - PICKUP_ZONE_AWAY_POS.z) ** 2
-    );
+    const dhSq = (px - PICKUP_ZONE_HOME_POS.x) ** 2 + (pz - PICKUP_ZONE_HOME_POS.z) ** 2;
+    const daSq = (px - PICKUP_ZONE_AWAY_POS.x) ** 2 + (pz - PICKUP_ZONE_AWAY_POS.z) ** 2;
+    const rSq = PICKUP_ZONE_RADIUS * PICKUP_ZONE_RADIUS;
 
-    const inHome = dHome < PICKUP_ZONE_RADIUS;
-    const inAway = dAway < PICKUP_ZONE_RADIUS;
+    const inHome = dhSq < rSq;
+    const inAway = daSq < rSq;
 
     if (inHome && pickupMyZone !== 'home') {
         pickupMyZone = 'home';
         pickupEnterZone('home');
+        setLocalJerseyColor(TEAMMATE_JERSEY_COLOR); // red
     } else if (inAway && pickupMyZone !== 'away') {
         pickupMyZone = 'away';
         pickupEnterZone('away');
+        setLocalJerseyColor(OPPONENT_JERSEY_COLOR); // blue
     } else if (!inHome && !inAway && pickupMyZone !== null) {
         pickupMyZone = null;
         pickupLeaveZone();
+        setLocalJerseyColor(0x777777); // neutral gray
     }
 
-    // Update prompt text
-    const prompt = document.getElementById('pickup-prompt');
-    if (prompt) {
-        if (pickupMyZone === 'home') {
-            prompt.textContent = 'You\'re queued for HOME (red)';
-            prompt.style.color = '#ff6b4a';
-        } else if (pickupMyZone === 'away') {
-            prompt.textContent = 'You\'re queued for AWAY (blue)';
-            prompt.style.color = '#5599ff';
-        } else if (dHome < 8 || dAway < 8) {
-            prompt.textContent = 'Walk into the glowing zone to join a team';
-            prompt.style.color = 'rgba(255,255,255,0.6)';
-        } else {
-            prompt.textContent = 'Walk to a court entrance to join a team';
-            prompt.style.color = 'rgba(255,255,255,0.45)';
+    // Update prompt text — only when state changes
+    const nearZone = dhSq < 64 || daSq < 64; // 8m radius
+    const newState = pickupMyZone || (nearZone ? 'near' : 'far');
+    if (newState !== _pickupPromptState) {
+        _pickupPromptState = newState;
+        if (!_pickupPromptEl) _pickupPromptEl = document.getElementById('pickup-prompt');
+        if (_pickupPromptEl) {
+            if (pickupMyZone === 'home') {
+                _pickupPromptEl.textContent = 'You\'re queued for HOME (red)';
+                _pickupPromptEl.style.color = '#ff6b4a';
+                _pickupPromptEl.style.borderColor = 'rgba(255, 80, 60, 0.3)';
+                _pickupPromptEl.style.background = 'rgba(40, 10, 10, 0.65)';
+            } else if (pickupMyZone === 'away') {
+                _pickupPromptEl.textContent = 'You\'re queued for AWAY (blue)';
+                _pickupPromptEl.style.color = '#5599ff';
+                _pickupPromptEl.style.borderColor = 'rgba(80, 140, 255, 0.3)';
+                _pickupPromptEl.style.background = 'rgba(10, 15, 40, 0.65)';
+            } else if (nearZone) {
+                _pickupPromptEl.textContent = 'Walk into the glowing zone to join a team';
+                _pickupPromptEl.style.color = 'rgba(255,255,255,0.7)';
+                _pickupPromptEl.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+                _pickupPromptEl.style.background = 'rgba(10, 12, 20, 0.6)';
+            } else {
+                _pickupPromptEl.textContent = 'Walk to a court entrance to join a team';
+                _pickupPromptEl.style.color = 'rgba(255,220,180,0.92)';
+                _pickupPromptEl.style.borderColor = 'rgba(255, 255, 255, 0.08)';
+                _pickupPromptEl.style.background = 'rgba(10, 12, 20, 0.6)';
+            }
         }
     }
 }
@@ -1911,7 +2181,7 @@ function handlePickupWorldState(msg) {
             // Create new remote player entity
             const pd = createPlayer(scene, {
                 jerseyColor: teamColor,
-                spawnPosition: { x: sp.x, y: undefined, z: sp.z },
+                spawnPosition: { x: sp.x, y: sp.y ?? undefined, z: sp.z },
                 facingAngle: sp.a,
                 name: `pickup-${sp.id}`,
                 visible: true
@@ -1920,14 +2190,23 @@ function handlePickupWorldState(msg) {
             const nametag = createNametagSprite(sp.n || 'Player');
             pd.group.add(nametag);
 
-            rp = { playerData: pd, nametag, targetX: sp.x, targetZ: sp.z, targetAngle: sp.a, teamColor };
+            pd._networkSynced = true;
+            rp = { playerData: pd, nametag, targetX: sp.x, targetZ: sp.z, targetY: sp.y ?? -0.265, targetAngle: sp.a, teamColor, seated: false };
             pickupRemotePlayers.set(sp.id, rp);
         }
 
         // Update interpolation targets
         rp.targetX = sp.x;
         rp.targetZ = sp.z;
+        rp.targetY = sp.y ?? rp.targetY;
         rp.targetAngle = sp.a;
+
+        // Sync animation state directly from server
+        rp.playerData.moveBlend = sp.mb ?? 0;
+        rp.playerData.walkCycle = sp.wc ?? 0;
+        rp.playerData.isGrounded = !!sp.g;
+        rp.playerData.isJumping = !!sp.j;
+        rp.seated = !!sp.s;
 
         // Update team color if changed
         if (rp.teamColor !== teamColor) {
@@ -1946,6 +2225,7 @@ function handlePickupWorldState(msg) {
             });
             const nametag = createNametagSprite(sp.n || 'Player');
             pd.group.add(nametag);
+            pd._networkSynced = true;
             rp.playerData = pd;
             rp.nametag = nametag;
         }
@@ -1969,72 +2249,117 @@ function handlePickupWorldState(msg) {
 
 function updateRemotePickupPlayers(delta) {
     const lerpRate = 1 - Math.exp(-12 * delta);
+    const yLerpRate = 1 - Math.exp(-16 * delta); // faster Y for snappy jumps
     for (const [, rp] of pickupRemotePlayers) {
         const g = rp.playerData.group;
+        const pd = rp.playerData;
+
+        // Interpolate XZ position
         g.position.x += (rp.targetX - g.position.x) * lerpRate;
         g.position.z += (rp.targetZ - g.position.z) * lerpRate;
 
-        // Smooth angle interpolation
-        let angleDiff = rp.targetAngle - rp.playerData.facingAngle;
-        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-        rp.playerData.facingAngle += angleDiff * lerpRate;
-        g.rotation.y = rp.playerData.facingAngle;
-
-        // Drive walk animation from position change
-        const speed = Math.sqrt(
-            (rp.targetX - g.position.x) ** 2 + (rp.targetZ - g.position.z) ** 2
-        ) / Math.max(delta, 0.001);
-        rp.playerData.moveBlend += ((speed > 0.3 ? 1 : 0) - rp.playerData.moveBlend) * (1 - Math.exp(-10 * delta));
-        if (rp.playerData.moveBlend > 0.01) {
-            rp.playerData.walkCycle = (rp.playerData.walkCycle || 0) + delta * 3.5;
+        // Estimate vertical velocity from Y delta (for jump animation)
+        const prevY = g.position.y;
+        // Interpolate Y position (for jumps)
+        g.position.y += (rp.targetY - g.position.y) * yLerpRate;
+        // Derive velocityY so animateLimbs knows up vs down phase
+        if (pd.isJumping && delta > 0) {
+            pd.velocityY = (g.position.y - prevY) / delta;
+        } else {
+            pd.velocityY = 0;
         }
 
-        // Run animation-only update
-        const idleInput = { forward: false, backward: false, left: false, right: false, jump: false };
-        updatePlayer(rp.playerData, delta, idleInput, null, null, null, true);
+        // Smooth angle interpolation
+        let angleDiff = rp.targetAngle - pd.facingAngle;
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        pd.facingAngle += angleDiff * lerpRate;
+        g.rotation.y = pd.facingAngle;
+
+        // moveBlend and walkCycle are synced directly from server data
+        // in handlePickupWorldState — no need to derive from position delta.
+        // Just run the animation update with skipPhysics = true.
+        const idleInput = _idleInput;
+        updatePlayer(pd, delta, idleInput, null, null, rp.seated ? _remoteSeatedCarry : null, true);
     }
 }
 
 function createNametagSprite(name) {
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 64;
+    canvas.width = 512;
+    canvas.height = 96;
     const ctx = canvas.getContext('2d');
 
-    // Background
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-    const textWidth = ctx.measureText(name).width;
-    const padX = 16;
-    const bgW = Math.min(240, Math.max(80, textWidth + padX * 2));
-    const bgX = (256 - bgW) / 2;
+    const displayName = name.slice(0, 16);
+    ctx.font = '600 28px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+
+    // Measure text for tight pill
+    const textWidth = ctx.measureText(displayName).width;
+    const padX = 28;
+    const padY = 8;
+    const bgW = Math.min(480, Math.max(100, textWidth + padX * 2));
+    const bgH = 44;
+    const bgX = (512 - bgW) / 2;
+    const bgY = (96 - bgH) / 2;
+
+    // Subtle dark gradient pill background
+    const grad = ctx.createLinearGradient(bgX, bgY, bgX, bgY + bgH);
+    grad.addColorStop(0, 'rgba(18, 18, 28, 0.55)');
+    grad.addColorStop(1, 'rgba(10, 10, 20, 0.45)');
+    ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.roundRect(bgX, 8, bgW, 44, 8);
+    ctx.roundRect(bgX, bgY, bgW, bgH, bgH / 2);
     ctx.fill();
 
-    // Text
-    ctx.font = 'bold 22px Arial, sans-serif';
-    ctx.fillStyle = '#ffffff';
+    // Thin top highlight for frosted feel
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.10)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(bgX, bgY, bgW, bgH, bgH / 2);
+    ctx.stroke();
+
+    // Name text — soft white with subtle shadow
+    ctx.font = '600 28px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(name.slice(0, 16), 128, 32);
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetY = 1;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+    ctx.fillText(displayName, 256, 48);
 
     const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
     const material = new THREE.SpriteMaterial({
-        map: texture, transparent: true, depthTest: false
+        map: texture, transparent: true, depthTest: false,
+        opacity: 0.9
     });
     const sprite = new THREE.Sprite(material);
-    sprite.scale.set(2.0, 0.5, 1);
-    sprite.position.y = 2.15;
+    sprite.scale.set(2.4, 0.45, 1);
+    sprite.position.y = 2.2;
     return sprite;
 }
 
 // ─── Pickup World HUD ───────────────────────────────────────
 
+// Cached pickup HUD DOM refs (populated on first use)
+let _pickupSlotEls = null; // [home0, home1, home2, away0, away1, away2]
+let _pickupCountdownEl = null;
+
+function _ensurePickupHUDRefs() {
+    if (_pickupSlotEls) return;
+    _pickupSlotEls = [];
+    for (let i = 0; i < 3; i++) _pickupSlotEls.push(document.getElementById(`pickup-home-slot-${i}`));
+    for (let i = 0; i < 3; i++) _pickupSlotEls.push(document.getElementById(`pickup-away-slot-${i}`));
+    _pickupCountdownEl = document.getElementById('pickup-countdown-display');
+}
+
 function updatePickupQueueHUD() {
+    _ensurePickupHUDRefs();
+
     // Home slots
     for (let i = 0; i < 3; i++) {
-        const el = document.getElementById(`pickup-home-slot-${i}`);
+        const el = _pickupSlotEls[i];
         if (el) {
             if (i < pickupQueueState.hq.length) {
                 el.textContent = pickupQueueState.hq[i];
@@ -2047,7 +2372,7 @@ function updatePickupQueueHUD() {
     }
     // Away slots
     for (let i = 0; i < 3; i++) {
-        const el = document.getElementById(`pickup-away-slot-${i}`);
+        const el = _pickupSlotEls[i + 3];
         if (el) {
             if (i < pickupQueueState.aq.length) {
                 el.textContent = pickupQueueState.aq[i];
@@ -2060,14 +2385,167 @@ function updatePickupQueueHUD() {
     }
 
     // Countdown
-    const cdEl = document.getElementById('pickup-countdown-display');
-    if (cdEl) {
+    if (_pickupCountdownEl) {
         if (pickupQueueState.cd > 0) {
-            cdEl.textContent = `GAME STARTING IN ${pickupQueueState.cd}`;
-            cdEl.style.display = 'block';
+            _pickupCountdownEl.textContent = `GAME STARTING IN ${pickupQueueState.cd}`;
+            _pickupCountdownEl.style.display = 'block';
         } else {
-            cdEl.style.display = 'none';
+            _pickupCountdownEl.style.display = 'none';
         }
+    }
+}
+
+// ─── Spectator Game Feed (watch court game from the world) ──
+
+function handlePickupGameState(msg) {
+    // null game data = game ended
+    if (!msg.gp) {
+        cleanupPickupGameEntities();
+        updatePickupScoreHUD();
+        return;
+    }
+
+    pickupGameActive = true;
+    pickupGameScores = msg.sc || [0, 0];
+
+    // Create or update the 6 game player entities
+    for (let i = 0; i < 6; i++) {
+        const sp = msg.gp[i];
+        if (!sp) {
+            // Player not present — remove if exists
+            if (pickupGameEntities[i]) {
+                if (pickupGameEntities[i].playerData?.group) {
+                    scene.remove(pickupGameEntities[i].playerData.group);
+                }
+                pickupGameEntities[i] = null;
+            }
+            continue;
+        }
+
+        const [x, z, angle, nickname] = sp;
+        const team = i < 3 ? 'home' : 'away';
+        const jerseyColor = team === 'home' ? 0xcc2222 : 0x2266cc;
+
+        if (!pickupGameEntities[i]) {
+            // Create new game player entity
+            const pd = createPlayer(scene, {
+                jerseyColor,
+                spawnPosition: { x, y: undefined, z },
+                facingAngle: angle,
+                name: `court-${team}-${i % 3}`,
+                visible: true
+            });
+            const nametag = createNametagSprite(nickname || 'Player');
+            pd.group.add(nametag);
+
+            pickupGameEntities[i] = {
+                playerData: pd, nametag,
+                targetX: x, targetZ: z, targetAngle: angle
+            };
+        } else {
+            // Update interpolation targets
+            pickupGameEntities[i].targetX = x;
+            pickupGameEntities[i].targetZ = z;
+            pickupGameEntities[i].targetAngle = angle;
+        }
+    }
+
+    // Create or update spectator ball
+    if (msg.b) {
+        if (!pickupGameBall) {
+            const geo = new THREE.SphereGeometry(BALL_RADIUS, 16, 12);
+            const mat = new THREE.MeshStandardMaterial({
+                color: 0xcc6622, roughness: 0.75, metalness: 0.02
+            });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.castShadow = true;
+            scene.add(mesh);
+            pickupGameBall = { mesh, targetX: msg.b[0], targetY: msg.b[1], targetZ: msg.b[2] };
+        }
+        pickupGameBall.targetX = msg.b[0];
+        pickupGameBall.targetY = msg.b[1];
+        pickupGameBall.targetZ = msg.b[2];
+    }
+
+    updatePickupScoreHUD();
+}
+
+function updatePickupGameEntities(delta) {
+    if (!pickupGameActive) return;
+    const lerpRate = 1 - Math.exp(-14 * delta);
+
+    // Interpolate game player positions
+    for (let i = 0; i < 6; i++) {
+        const ent = pickupGameEntities[i];
+        if (!ent) continue;
+        const g = ent.playerData.group;
+
+        // Position
+        g.position.x += (ent.targetX - g.position.x) * lerpRate;
+        g.position.z += (ent.targetZ - g.position.z) * lerpRate;
+
+        // Angle
+        let angleDiff = ent.targetAngle - ent.playerData.facingAngle;
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        ent.playerData.facingAngle += angleDiff * lerpRate;
+        g.rotation.y = ent.playerData.facingAngle;
+
+        // Drive walk animation from movement speed
+        const speed = Math.sqrt(
+            (ent.targetX - g.position.x) ** 2 + (ent.targetZ - g.position.z) ** 2
+        ) / Math.max(delta, 0.001);
+        ent.playerData.moveBlend += ((speed > 0.3 ? 1 : 0) - ent.playerData.moveBlend) * (1 - Math.exp(-10 * delta));
+        if (ent.playerData.moveBlend > 0.01) {
+            ent.playerData.walkCycle = (ent.playerData.walkCycle || 0) + delta * 3.5;
+        }
+
+        // Animation-only player update (no input, no collisions)
+        const idleInput = _idleInput;
+        updatePlayer(ent.playerData, delta, idleInput, null, null, null, true);
+    }
+
+    // Interpolate ball position
+    if (pickupGameBall) {
+        const bm = pickupGameBall.mesh;
+        bm.position.x += (pickupGameBall.targetX - bm.position.x) * lerpRate;
+        bm.position.y += (pickupGameBall.targetY - bm.position.y) * lerpRate;
+        bm.position.z += (pickupGameBall.targetZ - bm.position.z) * lerpRate;
+    }
+}
+
+function cleanupPickupGameEntities() {
+    for (let i = 0; i < pickupGameEntities.length; i++) {
+        if (pickupGameEntities[i]?.playerData?.group) {
+            scene.remove(pickupGameEntities[i].playerData.group);
+        }
+        pickupGameEntities[i] = null;
+    }
+    pickupGameEntities.length = 0;
+
+    if (pickupGameBall) {
+        scene.remove(pickupGameBall.mesh);
+        pickupGameBall.mesh.geometry.dispose();
+        pickupGameBall.mesh.material.dispose();
+        pickupGameBall = null;
+    }
+
+    pickupGameActive = false;
+    pickupGameScores = null;
+}
+
+function updatePickupScoreHUD() {
+    const bar = document.getElementById('pickup-game-bar');
+    if (!bar) return;
+
+    if (pickupGameActive && pickupGameScores) {
+        bar.style.display = '';
+        const homeEl = bar.querySelector('.home-score');
+        const awayEl = bar.querySelector('.away-score');
+        if (homeEl) homeEl.textContent = pickupGameScores[0];
+        if (awayEl) awayEl.textContent = pickupGameScores[1];
+    } else {
+        bar.style.display = 'none';
     }
 }
 
@@ -2080,7 +2558,13 @@ function updatePickupWorld(delta) {
     setPickupPosition(
         playerData.group.position.x,
         playerData.group.position.z,
-        playerData.facingAngle
+        playerData.facingAngle,
+        playerData.group.position.y,
+        playerData.moveBlend,
+        playerData.walkCycle,
+        playerData.isGrounded,
+        playerData.isJumping,
+        !!sitState
     );
 
     // Zone proximity detection
@@ -2091,6 +2575,9 @@ function updatePickupWorld(delta) {
 
     // Interpolate remote players
     updateRemotePickupPlayers(delta);
+
+    // Interpolate spectator game entities (players on court + ball)
+    updatePickupGameEntities(delta);
 }
 
 function getSkyQualityName() {
@@ -5048,6 +5535,8 @@ function buildScene() {
     playerColliders = hoopColliders.concat(parkColliders);
 
     createCity(scene);
+    const cityColliders = scene.userData.cityColliders || [];
+    playerColliders = hoopColliders.concat(parkColliders).concat(cityColliders);
     lightingGroup = createLighting(scene);
     playerData = createPlayer(scene);
     playerData.baseSpeedMultiplier = 1.0;
@@ -5557,6 +6046,8 @@ function updateFreeRoam(delta) {
 // ─── Input Handlers ─────────────────────────────────────────
 function onKeyDown(e) {
     if (!gameStarted) return;
+    // Don't capture keys when user is typing in an input field
+    if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) return;
     const tipOffActive = isSoloTipOffActive();
     const tipOffSetup = tipOffActive && tipOffState?.phase === 'setup';
     const tipOffContest = tipOffActive && tipOffState?.phase === 'contest';
@@ -5591,10 +6082,14 @@ function onKeyDown(e) {
 
         if (tipOffContest) {
             switch (e.code) {
-                case 'ArrowUp':    case 'KeyW': playerInput.forward = true; e.preventDefault(); break;
-                case 'ArrowDown':  case 'KeyS': playerInput.backward = true; e.preventDefault(); break;
-                case 'ArrowLeft':  case 'KeyA': playerInput.left = true; e.preventDefault(); break;
-                case 'ArrowRight': case 'KeyD': playerInput.right = true; e.preventDefault(); break;
+                case 'ArrowUp':    playerInput.forward = true; e.preventDefault(); break;
+                case 'ArrowDown':  playerInput.backward = true; e.preventDefault(); break;
+                case 'ArrowLeft':  playerInput.left = true; e.preventDefault(); break;
+                case 'ArrowRight': playerInput.right = true; e.preventDefault(); break;
+                case 'KeyW': cameraInput.pitchUp = true; e.preventDefault(); break;
+                case 'KeyS': cameraInput.pitchDown = true; e.preventDefault(); break;
+                case 'KeyA': cameraInput.rotateLeft = true; e.preventDefault(); break;
+                case 'KeyD': cameraInput.rotateRight = true; e.preventDefault(); break;
                 case 'Space': playerInput.jump = true; e.preventDefault(); break;
                 case 'KeyZ':
                     pickupQueued = true;
@@ -5612,23 +6107,33 @@ function onKeyDown(e) {
         }
 
         if (shootingStance || passingStance) {
-            // In shooting/pass stance: A/D = turn, X = fire, C = cancel
+            // In shooting/pass stance: arrows = aim/turn, X = fire, C = cancel
+            // WASD still controls camera look
             switch (e.code) {
-                case 'ArrowUp':    case 'KeyW': shootInput.aimUp = true; e.preventDefault(); break;
-                case 'ArrowDown':  case 'KeyS': shootInput.aimDown = true; e.preventDefault(); break;
-                case 'ArrowLeft':  case 'KeyA': shootInput.turnLeft = true; e.preventDefault(); break;
-                case 'ArrowRight': case 'KeyD': shootInput.turnRight = true; e.preventDefault(); break;
+                case 'ArrowUp':    shootInput.aimUp = true; e.preventDefault(); break;
+                case 'ArrowDown':  shootInput.aimDown = true; e.preventDefault(); break;
+                case 'ArrowLeft':  shootInput.turnLeft = true; e.preventDefault(); break;
+                case 'ArrowRight': shootInput.turnRight = true; e.preventDefault(); break;
+                case 'KeyW': cameraInput.pitchUp = true; e.preventDefault(); break;
+                case 'KeyS': cameraInput.pitchDown = true; e.preventDefault(); break;
+                case 'KeyA': cameraInput.rotateLeft = true; e.preventDefault(); break;
+                case 'KeyD': cameraInput.rotateRight = true; e.preventDefault(); break;
                 case 'KeyX': shootQueued = true; e.preventDefault(); break;
                 case 'KeyB': blockHeld = true; e.preventDefault(); break;
                 case 'KeyZ': if (passingStance) { passQueued = true; } e.preventDefault(); break;
                 case 'KeyC': cancelShootQueued = true; e.preventDefault(); break;
             }
         } else {
+            // Normal play: arrows = movement, WASD = camera look
             switch (e.code) {
-                case 'ArrowUp':    case 'KeyW': playerInput.forward = true; e.preventDefault(); break;
-                case 'ArrowDown':  case 'KeyS': playerInput.backward = true; e.preventDefault(); break;
-                case 'ArrowLeft':  case 'KeyA': playerInput.left = true; e.preventDefault(); break;
-                case 'ArrowRight': case 'KeyD': playerInput.right = true; e.preventDefault(); break;
+                case 'ArrowUp':    playerInput.forward = true; e.preventDefault(); break;
+                case 'ArrowDown':  playerInput.backward = true; e.preventDefault(); break;
+                case 'ArrowLeft':  playerInput.left = true; e.preventDefault(); break;
+                case 'ArrowRight': playerInput.right = true; e.preventDefault(); break;
+                case 'KeyW': cameraInput.pitchUp = true; e.preventDefault(); break;
+                case 'KeyS': cameraInput.pitchDown = true; e.preventDefault(); break;
+                case 'KeyA': cameraInput.rotateLeft = true; e.preventDefault(); break;
+                case 'KeyD': cameraInput.rotateRight = true; e.preventDefault(); break;
                 case 'Space': playerInput.jump = true; e.preventDefault(); break;
                 case 'KeyZ':
                     // Inbound pass-in: Z fires the inbound pass
@@ -5672,21 +6177,32 @@ function onKeyDown(e) {
 
 function onKeyUp(e) {
     if (!gameStarted) return;
+    if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) return;
 
     // Clear all input states regardless of mode
     switch (e.code) {
-        case 'ArrowUp':    case 'KeyW':
+        // Arrow keys — movement + stance aim
+        case 'ArrowUp':
             moveState.forward = false; playerInput.forward = false;
             shootInput.aimUp = false; break;
-        case 'ArrowDown':  case 'KeyS':
+        case 'ArrowDown':
             moveState.backward = false; playerInput.backward = false;
             shootInput.aimDown = false; break;
-        case 'ArrowLeft':  case 'KeyA':
+        case 'ArrowLeft':
             moveState.left = false; playerInput.left = false;
             shootInput.turnLeft = false; break;
-        case 'ArrowRight': case 'KeyD':
+        case 'ArrowRight':
             moveState.right = false; playerInput.right = false;
             shootInput.turnRight = false; break;
+        // WASD — camera look (in player mode) / movement (in freeroam)
+        case 'KeyW':
+            moveState.forward = false; cameraInput.pitchUp = false; break;
+        case 'KeyS':
+            moveState.backward = false; cameraInput.pitchDown = false; break;
+        case 'KeyA':
+            moveState.left = false; cameraInput.rotateLeft = false; break;
+        case 'KeyD':
+            moveState.right = false; cameraInput.rotateRight = false; break;
         case 'Space': moveState.up = false; playerInput.jump = false; break;
         case 'ShiftLeft': case 'ShiftRight': moveState.down = false; break;
         case 'KeyB': blockHeld = false; break;
@@ -5718,6 +6234,65 @@ renderer.domElement.addEventListener('mousedown', (e) => {
 });
 
 // ─── Camera Mode Switching ──────────────────────────────────
+// ─── WASD Camera Look + Gentle Auto-Follow ──────────────────
+// Uses persistent authoritative angles (no drift from target movement).
+// OrbitControls rotation is disabled in player mode — WASD handles it.
+// Scroll wheel zoom still works via OrbitControls.
+const CAM_ROTATE_SPEED = 2.4;  // radians/sec for A/D
+const CAM_PITCH_SPEED  = 1.6;  // radians/sec for W/S
+const CAM_ACCEL_RATE   = 10;   // velocity smoothing rate
+
+function initPlayerCameraAngles() {
+    _camOffset.subVectors(camera.position, controls.target);
+    _camSpherical.setFromVector3(_camOffset);
+    _playerCamTheta = _camSpherical.theta;
+    _playerCamPhi = _camSpherical.phi;
+    _camThetaVel = 0;
+    _camPhiVel = 0;
+}
+
+function applyCameraLookAndFollow(delta) {
+    if (!playerData) return;
+
+    // Read radius from current distance (scroll wheel zoom changes this)
+    _camOffset.subVectors(camera.position, controls.target);
+    const radius = Math.max(controls.minDistance, Math.min(controls.maxDistance, _camOffset.length()));
+
+    // ── Velocity-smoothed WASD camera input ──────────────
+    const targetThetaVel = ((cameraInput.rotateLeft ? 1 : 0) - (cameraInput.rotateRight ? 1 : 0)) * CAM_ROTATE_SPEED;
+    const targetPhiVel = ((cameraInput.pitchDown ? 1 : 0) - (cameraInput.pitchUp ? 1 : 0)) * CAM_PITCH_SPEED;
+
+    const accel = 1 - Math.exp(-CAM_ACCEL_RATE * delta);
+    _camThetaVel += (targetThetaVel - _camThetaVel) * accel;
+    _camPhiVel += (targetPhiVel - _camPhiVel) * accel;
+
+    _playerCamTheta += _camThetaVel * delta;
+    _playerCamPhi += _camPhiVel * delta;
+    _playerCamPhi = Math.max(0.2, Math.min(Math.PI / 2 - 0.05, _playerCamPhi));
+
+    // ── Very gentle auto-follow ──────────────────────────
+    // Only kicks in when walking AND not manually rotating AND severely off
+    const manualRotating = cameraInput.rotateLeft || cameraInput.rotateRight;
+    if (!manualRotating && playerData.moveBlend > 0.5) {
+        const desiredTheta = playerData.facingAngle - Math.PI;
+        let diff = desiredTheta - _playerCamTheta;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+
+        // Only auto-correct when severely misaligned (> ~90°)
+        if (Math.abs(diff) > 1.57) {
+            const followRate = 1 - Math.exp(-0.7 * delta);
+            _playerCamTheta += diff * followRate;
+        }
+    }
+
+    // ── Set camera position from persistent angles ───────
+    _camSpherical.set(radius, _playerCamPhi, _playerCamTheta);
+    _camOffset.setFromSpherical(_camSpherical);
+    camera.position.copy(controls.target).add(_camOffset);
+    camera.lookAt(controls.target);
+}
+
 function switchCameraMode(mode) {
     if (!gameStarted) return;
 
@@ -5750,31 +6325,44 @@ function switchCameraMode(mode) {
     if (mode === 'orbit') {
         if (isPointerLocked) document.exitPointerLock();
         controls.enabled = true;
+        controls.enableRotate = true;
+        controls.enablePan = true;
         controls.target.set(0, 1, 0);
         controls.minDistance = 5;
         controls.maxDistance = 150;
         controls.update();
         resetMoveState();
+        resetCameraInput();
         pickupQueued = false;
     } else if (mode === 'freeroam') {
         controls.enabled = false;
+        controls.enableRotate = true;
+        controls.enablePan = true;
         setupFreeRoam();
+        resetCameraInput();
         pickupQueued = false;
     } else if (mode === 'player') {
         if (isPointerLocked) document.exitPointerLock();
         controls.enabled = true;
+        controls.enableRotate = false;  // WASD handles rotation
+        controls.enablePan = false;
         if (playerData) {
             playerData.group.visible = true;
-            // Position camera behind and above the player
             const pp = playerData.group.position;
             const groundY = pp.y + (playerData.visualGroundOffsetY || 0);
-            camera.position.set(pp.x, groundY + 4, pp.z + 8);
+            const isPickup = pickupWorldActive || gameMode === 'pickup-world';
+            // Position camera behind and above the player
+            const camDist = isPickup ? 5.5 : 8;
+            const camHeight = isPickup ? 2.8 : 4;
+            camera.position.set(pp.x, groundY + camHeight, pp.z + camDist);
             controls.target.set(pp.x, groundY + 1.2, pp.z);
-            controls.minDistance = 3;
-            controls.maxDistance = 18;
+            controls.minDistance = isPickup ? 3 : 3;
+            controls.maxDistance = isPickup ? 12 : 18;
             controls.update();
+            initPlayerCameraAngles(); // capture initial orbit angles
         }
         resetMoveState();
+        resetCameraInput();
     }
     updateModeUI();
 }
@@ -5796,13 +6384,13 @@ function updateModeUI() {
             hint.textContent = 'Click to capture mouse | WASD / Arrows to move | Mouse to look | Space up | Shift down | ESC release';
         } else if (cameraMode === 'player') {
             if (isSoloTipOffActive()) {
-                hint.textContent = 'Jump Ball: Move with WASD / Arrows | Space to jump | Z to secure possession in the air';
+                hint.textContent = 'Jump Ball: Arrows move | WASD look | Space jump | Z secure ball';
             } else if (isInboundActive() && inboundState?.phase === 'passing' && inboundState?.inbounder === playerData) {
                 hint.textContent = 'Inbound: Press Z to pass the ball in';
             } else if (isInboundActive()) {
                 hint.textContent = 'Out of Bounds — waiting for inbound...';
             } else {
-                hint.textContent = 'WASD / Arrows walk | Space jump | Z pick up / pass | X shoot / dunk | B hold block | V punch | C sit/stand';
+                hint.textContent = 'Arrows move | WASD look | Space jump | Z pick up / pass | X shoot / dunk | B block | V punch | C sit';
             }
         }
     }
@@ -5849,8 +6437,29 @@ function animate() {
 
         // ── Pickup world: movement-only player loop (no gameplay state machines) ──
         if (pickupWorldActive) {
-            updatePlayer(playerData, delta, playerInput, playerMoveBasis, playerColliders, null);
+            // Build minimal carryState for seated pose in pickup world
+            let pickupCarryState = null;
+            if (sitState) {
+                _carryState.holding = false;
+                _carryState.shooting = false;
+                _carryState.dribbling = false;
+                _carryState.dribblePhase = 0;
+                _carryState.dunking = false;
+                _carryState.hanging = false;
+                _carryState.seated = true;
+                _carryState.seatSettled = sitState.phase === 'sit';
+                _carryState.blocking = false;
+                pickupCarryState = _carryState;
+                // Freeze player while seated
+                resetPlayerInput();
+                playerData.velocity.set(0, 0, 0);
+                playerData.velocityY = 0;
+                playerData.isGrounded = true;
+                playerData.isJumping = false;
+            }
+            updatePlayer(playerData, delta, playerInput, playerMoveBasis, playerColliders, pickupCarryState);
             updatePickupWorld(delta);
+            updatePickupPlayerIndicator(delta);
 
             // Camera follow (shared with normal mode below)
             const pp = playerData.group.position;
@@ -5859,6 +6468,7 @@ function animate() {
             const followLerp = 1 - Math.exp(-10 * delta);
             controls.target.lerp(playerCameraTarget, followLerp);
             controls.update();
+            applyCameraLookAndFollow(delta);
         }
 
         if (!pickupWorldActive && tipOffSetup) {
@@ -5881,7 +6491,7 @@ function animate() {
             passTargetTeammate = null;
         }
 
-        if (!pickupWorldActive && !tipOffActive && sitToggleQueued) {
+        if (!tipOffActive && sitToggleQueued) {
             if (sitState) {
                 startStandingFromSeat();
             } else {
@@ -5891,7 +6501,7 @@ function animate() {
             sitToggleQueued = false;
         }
 
-        if (!pickupWorldActive && sitState) {
+        if (sitState) {
             updateSeating(delta);
             pickupAssistTimer = 0;
             playerData._pickupAssistActive = false;
@@ -6215,6 +6825,7 @@ function animate() {
             const followLerp = 1 - Math.exp(-10 * delta);
             controls.target.lerp(playerCameraTarget, followLerp);
             controls.update();
+            applyCameraLookAndFollow(delta);
         }
     } else if (pickupQueued) {
         pickupQueued = false;
@@ -6264,7 +6875,7 @@ function animate() {
         }
     } else if (isInboundActive()) {
         // During inbound: all AI players stand idle (no chasing, no pickups)
-        const idleInput = { forward: false, backward: false, left: false, right: false, jump: false };
+        const idleInput = _idleInput;
         for (const opp of opponents) {
             if (opp === inboundState?.inbounder) continue; // inbounder handled by inbound system
             updatePlayer(opp, delta, idleInput, null, playerColliders.filter(c => c !== opp._collider), null);
@@ -6304,7 +6915,7 @@ function animate() {
         updateTipOffReferee(delta);
     } else if (isInboundActive()) {
         // During inbound: teammates stand idle
-        const idleInput = { forward: false, backward: false, left: false, right: false, jump: false };
+        const idleInput = _idleInput;
         for (const tm of teammates) {
             if (tm === inboundState?.inbounder) continue; // inbounder handled by inbound system
             updatePlayer(tm, delta, idleInput, null, playerColliders.filter(c => c !== tm._collider), null);

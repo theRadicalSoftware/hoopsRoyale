@@ -7,7 +7,7 @@
 import connection from './connection.js';
 import * as MSG from './protocol.js';
 
-const BROADCAST_RATE = 50; // ms between state broadcasts (20Hz)
+const BROADCAST_RATE = 33; // ms between state broadcasts (~30Hz)
 
 // ─── State ─────────────────────────────────────────────────
 let active = false;

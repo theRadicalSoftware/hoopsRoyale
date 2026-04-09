@@ -2,6 +2,8 @@
 // Message types shared between server and client.
 // Each WebSocket message is JSON: { type: MSG_TYPE, ...payload }
 
+import { randomBytes } from 'node:crypto';
+
 // ── Lobby ────────────────────────────────────────────────────
 export const HELLO           = 'HELLO';           // C→S  { nickname }  →  S→C { sessionId }
 export const LIST_ROOMS      = 'LIST_ROOMS';      // C→S  {}            →  S→C { rooms: [] }
@@ -19,8 +21,8 @@ export const ERROR           = 'ERROR';           // S→C  { message }
 // ── Pickup ───────────────────────────────────────────────────
 export const JOIN_PICKUP     = 'JOIN_PICKUP';     // C→S  {}
 export const LEAVE_PICKUP    = 'LEAVE_PICKUP';    // C→S  {}
-export const PICKUP_UPDATE   = 'PICKUP_UPDATE';   // S→C  { queuePos, queueLen, court }
-export const PICKUP_MATCH    = 'PICKUP_MATCH';    // S→C  { team, slot, roomCode }
+export const PICKUP_UPDATE   = 'PICKUP_UPDATE';   // C→S {} → S→C { players, homeQueue, awayQueue, countdown, gameActive }
+export const PICKUP_MATCH    = 'PICKUP_MATCH';    // (legacy, unused)
 
 // ── Game (relay) ─────────────────────────────────────────────
 export const PLAYER_INPUT    = 'PLAYER_INPUT';    // C→S→Host  { f,b,l,r,j,z,x,c,v,bk }
@@ -35,6 +37,8 @@ export const PICKUP_POSITION     = 'PICKUP_POSITION';     // C→S { x, z, a }
 export const PICKUP_WORLD_STATE  = 'PICKUP_WORLD_STATE';  // S→C { p[], hq[], aq[], cd }
 export const PICKUP_ZONE_ENTER   = 'PICKUP_ZONE_ENTER';   // C→S { team }
 export const PICKUP_ZONE_LEAVE   = 'PICKUP_ZONE_LEAVE';   // C→S {}
+export const PICKUP_GAME_STATE   = 'PICKUP_GAME_STATE';   // S→C { gp[], b[], sc[] } — spectator view of active court game
+export const PICKUP_CHAT         = 'PICKUP_CHAT';         // C→S { text } → S→C { from, text } — world chat
 
 // ── Connection ───────────────────────────────────────────────
 export const PING            = 'PING';            // C→S  { t }
@@ -43,22 +47,18 @@ export const DISCONNECTED    = 'DISCONNECTED';    // S→C  { sessionId, nicknam
 export const RECONNECT       = 'RECONNECT';       // C→S  { sessionId }
 
 // ── Helpers ──────────────────────────────────────────────────
-/** Generate a random 6-character alphanumeric room code. */
+/** Generate a random 6-character alphanumeric room code (crypto-secure). */
 export function generateRoomCode() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I/O/0/1 to avoid confusion
+    const bytes = randomBytes(6);
     let code = '';
     for (let i = 0; i < 6; i++) {
-        code += chars[Math.floor(Math.random() * chars.length)];
+        code += chars[bytes[i] % chars.length];
     }
     return code;
 }
 
-/** Generate a random session ID. */
+/** Generate a crypto-secure random session ID (32-char hex). */
 export function generateSessionId() {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    let id = '';
-    for (let i = 0; i < 16; i++) {
-        id += chars[Math.floor(Math.random() * chars.length)];
-    }
-    return id;
+    return randomBytes(16).toString('hex');
 }

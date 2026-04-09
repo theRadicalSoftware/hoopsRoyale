@@ -6,10 +6,10 @@ Hoops Royale is a **street basketball game** built entirely in **Three.js** (v0.
 
 The vision: a gritty, NYC street basketball experience. Think Central Park pickup games with chain-link fences, graffiti, cracked asphalt, and city skyline all around. The game starts at a worn-down public court and will eventually progress to better courts as the player advances.
 
-## Current State (as of April 3, 2026)
+## Current State (as of April 8, 2026)
 
 **What exists:**
-- A fully built, explorable 3D environment (court, park, city)
+- A fully built, explorable 3D environment (court, park, city) with procedural sky system
 - A controllable player character with jointed limbs, walk/jump animation, and velocity-based movement
 - Basketball with procedural leather texture, physics (gravity, bounce, drag, rolling), and sleep system
 - Ball pickup (Z key) with pickup assist (brief magnetism window for smoother grabs)
@@ -26,7 +26,8 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - **Seating system** — sit on benches/bleachers (C key for player) with smooth enter/exit transitions and seated pose animation. AI players can also sit on benches to recover stamina (walking → entering → seated → exiting phases with smooth transitions and forward step on exit).
 - **Punch system** — V key throws alternating hook punches (or free-hand punch while dribbling). Fast 3-phase animation: extend (0.08s) → hold (0.04s) → retract (0.16s). Blends on top of any current arm pose.
 - **Punch impact & stun system** — punches that connect with another player's body cause: ball drop (ball pops up and away), 1.8-second stun with flinch animation (arms drop limp, knees buckle, recoil pushback in hit direction), all actions blocked during stun. Works between all player entities (user, teammates, opponents). Cancels active dunks on hit.
-- **Stamina / energy system** — all players (user, teammates, opponents) have stamina (0-100). Drains from: running (3/sec), punching (10), shooting (15), passing (6), dunking (18), jumping (7). Recovers: idle standing (1.5/sec), sitting on bench (22/sec). Below 20 stamina: movement speed reduced to 62%. Below 5: can't punch/shoot/dunk. AI drops the ball and seeks benches when stamina < 22, leaves bench when > 85. Visual: HUD bar for user + under-foot thin yellow stamina arc for all players.
+- **Block mechanic** — B key hold enables blocking stance. Drains stamina at 7.2/sec, cancels all stances, zeros movement, negates incoming punch hits. Serialized in multiplayer state via `pd.blocking` flag.
+- **Stamina / energy system** — all players (user, teammates, opponents) have stamina (0-100). Drains from: running (3/sec), punching (10), shooting (15), passing (6), dunking (18), jumping (7), blocking (7.2/sec). Recovers: idle standing (1.5/sec), sitting on bench (22/sec). Below 20 stamina: movement speed reduced to 62%. Below 5: can't punch/shoot/dunk/block. AI drops the ball and seeks benches when stamina < 22, leaves bench when > 85. Visual: HUD bar for user + under-foot thin yellow stamina arc for all players.
 - **Teammate system** — up to 3 AI teammates (red jerseys with canvas-drawn numbers: 5, 11, 32). Full competitive multi-state AI: free-ball pursuit, dribble-drive to correct rim (-Z), shoot, dunk, pass to player/teammates, defensive chase/punch, off-ball positioning, bench recovery.
 - **Passing system** — Z key to pass (close auto-pass within 5m, far aimed pass with red line + power meter). Pass stance: chest-level ball hold, A/D to aim, X or Z to fire, C to cancel. Mutual exclusion with shooting stance. Opponents also pass between each other when pressured or after holding too long.
 - **Opponent system** — up to 3 AI opponents (blue jerseys `0x2266cc` with numbers: 3, 7, 24). Full AI with multi-state behavior:
@@ -46,39 +47,64 @@ The vision: a gritty, NYC street basketball experience. Think Central Park picku
 - Collision system for both player and ball against environment objects (benches, trash cans, bleachers, fence posts, hoop poles, backboards)
 - Dribble-time collision release (ball bounces off objects while being dribbled and escapes player control)
 - Three camera modes: Orbit, Free Roam, and Drop In (player control with camera-relative movement)
-- **Start menu** with smooth time-driven orbit camera animation and "Click To Begin" overlay
+- **Mode select screen** — glassmorphism card layout with 3 game mode options (Solo 3v3, Online Multiplayer, Free Play sandbox). Smooth orbit camera animation behind it.
+- **Dynamic sky system** — Three.js `Sky` shader with procedural cloud layers (near/far/detail) driven by wind-offset UV scrolling, star dome (procedural starfield, fades with day/night), night tint dome. Sun/moon celestial bodies orbit on `skyElapsed`. Auto-cycle mode: sinusoidal day/night over 210-second period. Sky quality controls: LOW/MED/HIGH toggle affecting cloud layer visibility and opacity multipliers.
 - Day/night cycle with smooth transitions, celestial bodies (sun/moon), and illuminating lamp posts
-- Chain-link fencing with gate openings, bleachers, benches, trees, paths
-- NYC-style city surroundings with buildings, streets, cars, street props
-- Eight UI buttons: Orbit Cam, Free Roam, Drop In, Ball Drop, Panels toggle, Day/Night toggle, Add Teammate (red), Add Opponent (blue)
+- Chain-link fencing with gate openings, bleachers, benches, trees (deterministic placement via `stableNoise2D`), dual-loop path network, perimeter planting beds, octagonal pavilion shelter, decorative pond with rocks/reeds/lily pads
+- NYC-style city surroundings with buildings (district-based height variation, facade articulation, rooftop silhouettes, AABB colliders), streets (with crosswalks), sidewalk planters, cars, street props, material caching, city ground plane (concrete pavement beneath all building districts)
+- **Multiplayer system** — full WebSocket-based host-client relay architecture:
+  - **Server** (`server/` directory): Node.js HTTP+WS server, room management (create/join/leave/kick), pickup world system, session tracking with 60s reconnection window
+  - **Client networking** (`js/net/` directory): singleton WebSocket connection with auto-reconnect and heartbeat, lobby UI (nickname prompt, Quick Match / Create Match / Pickup tabs, waiting room with chat), host-sync (20Hz state broadcast of all entities + ball + scores), guest-sync (snapshot buffer with interpolation + 60Hz input sending)
+  - **Protocol**: mirrored `protocol.js` on client and server — lobby messages (HELLO, LIST_ROOMS, CREATE_ROOM, JOIN_ROOM, etc.), pickup world (PICKUP_ENTER_WORLD, PICKUP_POSITION, PICKUP_WORLD_STATE, PICKUP_ZONE_ENTER/LEAVE), game relay (PLAYER_INPUT, GAME_STATE, GAME_ACTION, GAME_OVER), connection (PING/PONG, RECONNECT)
+  - Host runs full game simulation, broadcasts serialized state. Guests interpolate received state and send input. Remote human players control entity slots via `getRemoteInput()` in the animate loop.
+  - Game mode `'online'` added alongside `'solo'` and `'freeplay'`
+- **Immersive pickup world lobby** — replaces text-based pickup queue with a walk-around 3D world:
+  - Players enter the shared park environment, walk their character around freely (movement-only, no gameplay state machines)
+  - Two glowing **queue zones** at court gate entrances (home = -Z gate at `z=-22`, away = +Z gate at `z=22`, radius 3.0m)
+  - Walking into a zone auto-queues for that team; walking out dequeues. Jersey color changes (red=home, blue=away, gray=unqueued)
+  - Zone visuals: pulsing ground ring, inner fill circle, 3 slot markers (fill on occupancy), beacon pillar with slow rotation, point light
+  - When both teams have 3 players, 5-second countdown starts, then auto-creates a room and launches a game
+  - **Remote players** rendered as full player models with nametag sprites (canvas texture), position interpolated at 12x lerp rate with walk animation driven from position delta
+  - 10 Hz position broadcast via `pickup-sync.js`, server maintains `worldPlayers` map with 45s AFK timeout cleanup
+  - Pickup HUD: glassmorphism panel with home/away slot roster + contextual prompt text
+  - `pickupWorldActive` flag gates ALL gameplay state machines — only movement, camera follow, and pickup zone proximity run
+- Eight UI buttons in free play: Orbit Cam, Free Roam, Drop In, Ball Drop, Panels toggle, Day/Night toggle, Add Teammate (red), Add Opponent (blue)
 
 **What does NOT exist yet:**
 - Full game rules / game modes (1v1, H-O-R-S-E, etc.) — OOB/inbounding is implemented but structured scoring targets/possession flow/check-ball are not
 - Sound/audio
-- Multiplayer
 - Court progression system
 - Player customization
 - Jump shots / running shots (shooting only while stationary for player; opponents shoot from standing)
 - Ball stealing (opponents can only get the ball via pickup after drop, punch-forced drop, or catching passes)
+- Multiplayer gameplay actions beyond movement (remote players can move but shoot/pass/punch/dunk actions from guests are not yet fully wired into the host simulation)
 
-The project is at the **rules & AI refinement stage**. Both teams have competitive AI with intelligent drive/pass/shoot decisions, OOB/inbounding is implemented, and the scoreboard/HUD system is unified across game modes. The next major milestone is **steal mechanic + sound + structured game modes**.
+The project is at the **multiplayer + rules refinement stage**. Both teams have competitive AI, OOB/inbounding is implemented, the scoreboard/HUD system is unified across game modes, and multiplayer infrastructure (host-relay, lobby, immersive pickup world) is in place. The next major milestone is **steal mechanic + sound + structured game modes**.
 
 ---
 
 ## How to Run
 
+### Single-player / offline (any static server)
 ```bash
-# Any static file server works. Examples:
 python3 -m http.server 8080
 # or
 npx serve .
 # or
 npx http-server .
 ```
+Then open `http://localhost:8080`. Solo and Free Play modes work with any static file server.
 
-Then open `http://localhost:8080` in a browser. That's it — no install, no build step.
+### Multiplayer (requires the game server)
+```bash
+cd server
+npm install          # first time only — installs the `ws` package
+cd ..
+node server/server.js
+```
+This starts a combined HTTP + WebSocket server on port 8080 (configurable via `PORT` env var). The server serves static files from the project root AND handles WebSocket connections for multiplayer. Open `http://localhost:8080` — Online and Pickup modes become available.
 
-The `package.json` exists solely to set `"type": "module"` so that `node --check` can validate ES module syntax during development.
+The root `package.json` exists solely to set `"type": "module"` so that `node --check` can validate ES module syntax during development. The `server/package.json` has the `ws` dependency.
 
 ---
 
@@ -91,7 +117,10 @@ The `package.json` exists solely to set `"type": "module"` so that `node --check
 | Textures | 100% procedural via `<canvas>` + `CanvasTexture` — no image files |
 | Controls | `OrbitControls` (orbit/player modes) + custom pointer lock (free roam) |
 | Rendering | `WebGLRenderer` with PCFSoftShadowMap, ACESFilmicToneMapping, SRGBColorSpace |
-| Build Tools | None — zero dependencies, no bundler |
+| Sky | Three.js `Sky` shader addon + procedural cloud/star layers |
+| Server | Node.js `http` + `ws` WebSocket library (only runtime dependency) |
+| Networking | Custom WebSocket protocol, host-authoritative relay, 20Hz state broadcast |
+| Build Tools | None — zero client dependencies, no bundler |
 
 **Performance settings:** `powerPreference: 'high-performance'`, pixel ratio capped at 1.5, sun shadow map 2048x2048, lamp post SpotLights have `castShadow: false` to avoid 6 extra shadow-map passes per frame.
 
@@ -101,19 +130,32 @@ The `package.json` exists solely to set `"type": "module"` so that `node --check
 
 ```
 Hoops-Royale/
-├── index.html          # Entry point, UI buttons, HUD elements, CSS, importmap (~851 lines)
+├── index.html          # Entry point, UI, HUD, CSS, lobby HTML, pickup HUD, importmap (~2052 lines)
 ├── package.json        # Just { "type": "module" } for node --check
 ├── CLAUDE.md           # This file
 ├── .gitignore
-└── js/
-    ├── main.js         # Scene setup, camera, controls, day/night, gameplay state machines, AI, OOB/inbounding, indicators, stamina, animation loop (~5288 lines)
-    ├── court.js        # Basketball court surface, lines, paint, graffiti (~672 lines)
-    ├── hoops.js        # Hoop assemblies (poles, backboards, rims, chain nets) (~479 lines)
-    ├── park.js         # Fencing, trees, benches, bleachers, lamps, paths, seat data (~1195 lines)
-    ├── city.js         # Buildings, streets, sidewalks, cars, street props (~707 lines)
-    ├── lighting.js     # All scene lights (sun, ambient, hemi, fill, rim, lampposts, moon) (~86 lines)
-    ├── player.js       # Player model, joints, walk/jump/idle/carry/shoot/dunk/sit/punch/stun animation, collision, stamina arc (~1184 lines)
-    └── ball.js         # Basketball creation, physics, dribbling, pickup, shooting, passing, torus rim collision, last-touch tracking (~1169 lines)
+├── js/
+│   ├── main.js         # Scene, camera, controls, sky, gameplay state machines, AI, multiplayer integration, pickup world, animation loop (~6448 lines)
+│   ├── court.js        # Basketball court surface, lines, paint, graffiti (~672 lines)
+│   ├── hoops.js        # Hoop assemblies (poles, backboards, rims, chain nets) (~479 lines)
+│   ├── park.js         # Fencing, trees, benches, bleachers, lamps, paths, pavilion, pond, planting beds, seat data (~1759 lines)
+│   ├── city.js         # Buildings, streets, sidewalks, cars, street props, crosswalks, planters, city ground plane, building colliders (~1127 lines)
+│   ├── lighting.js     # All scene lights (sun, ambient, hemi, fill, rim, lampposts, moon) (~94 lines)
+│   ├── player.js       # Player model, joints, animation states, collision, stamina arc (~1233 lines)
+│   ├── ball.js         # Basketball creation, physics, dribbling, pickup, shooting, passing, torus rim collision (~1169 lines)
+│   └── net/
+│       ├── protocol.js     # Message type constants (mirrored on server) (~42 lines)
+│       ├── connection.js   # Singleton WebSocket with reconnect + heartbeat (~242 lines)
+│       ├── lobby-ui.js     # All lobby DOM interactions: nickname, tabs, waiting room, chat (~608 lines)
+│       ├── host-sync.js    # Host: 20Hz state broadcast + remote input reception (~260 lines)
+│       ├── guest-sync.js   # Guest: snapshot interpolation + 60Hz input sending (~288 lines)
+│       └── pickup-sync.js  # Pickup world: 10Hz position broadcast + zone messaging (~105 lines)
+└── server/
+    ├── package.json    # { "type": "module", dependencies: { "ws": "..." } }
+    ├── protocol.js     # Server-side message type constants + generateSessionId() (~64 lines)
+    ├── server.js       # HTTP static file server + WebSocket message router (~369 lines)
+    ├── rooms.js        # Room lifecycle: create/join/leave/kick, team assignment, game relay (~354 lines)
+    └── pickup.js       # Pickup world: persistent world state, zone queuing, countdown, game launch (~304 lines)
 ```
 
 ### Module Dependency Graph
@@ -121,24 +163,33 @@ Hoops-Royale/
 ```
 index.html
   └── js/main.js (entry point)
-        ├── js/court.js      → createCourt(scene)
-        ├── js/hoops.js      → createHoops(scene)         [sets scene.userData.hoopColliders]
-        ├── js/park.js       → createPark(scene)           [sets scene.userData.parkColliders]
-        ├── js/city.js       → createCity(scene)
-        ├── js/lighting.js   → createLighting(scene)
-        ├── js/player.js     → createPlayer(scene, options), updatePlayer(pd, delta, input, movementBasis, colliders, carryState), getPunchFistPosition(pd), applyStun(pd, dirX, dirZ), updateStaminaBar(pd, camera), PUNCH_HIT_RADIUS
-        └── js/ball.js       → createBasketball(scene), dropBasketballAtCenter(ball), tryPickUpBasketball(ball, playerData), updateBasketball(ball, delta, colliders, playerData, allPlayers), shootBasketball(ball, playerData, angleDeg, powerMult), passBallToTarget(ball, from, targetPos, type), tryTeammateCatch(ball, tmData), forceDropBall(ball, hitDirX, hitDirZ, puncher)
+        ├── js/court.js        → createCourt(scene)
+        ├── js/hoops.js        → createHoops(scene)         [sets scene.userData.hoopColliders]
+        ├── js/park.js         → createPark(scene)           [sets scene.userData.parkColliders]
+        ├── js/city.js         → createCity(scene)
+        ├── js/lighting.js     → createLighting(scene)
+        ├── js/player.js       → createPlayer, updatePlayer, getPunchFistPosition, applyStun, updateStaminaBar, PUNCH_HIT_RADIUS
+        ├── js/ball.js         → createBasketball, dropBasketballAtCenter, tryPickUpBasketball, updateBasketball, shootBasketball, passBallToTarget, tryTeammateCatch, forceDropBall
+        ├── js/net/lobby-ui.js → initLobbyUI, showNicknamePrompt
+        ├── js/net/host-sync.js → startHostSync, stopHostSync, getRemoteInput, getSlotAssignments, getSessionForSlot, broadcastAction, broadcastGameOver, isHostSyncActive
+        ├── js/net/guest-sync.js → startGuestSync, stopGuestSync, setLocalInput, getInterpolatedState, getLatestSnapshot, getMyPlayerIndex, isGuestSyncActive
+        └── js/net/pickup-sync.js → startPickupSync, stopPickupSync, setPosition, enterZone, leaveZone, sendLeavePickup, isPickupSyncActive, getMyTeam, getMySessionId
+
+server/server.js (Node.js entry point)
+        ├── server/protocol.js  → message type constants + generateSessionId
+        ├── server/rooms.js     → createRoom, joinRoom, leaveRoom, switchTeam, toggleReady, startGame, endGame, listPublicRooms, findPlayerRoom, relayFromHost, relayInputToHost, broadcastToRoom, handleDisconnect
+        └── server/pickup.js    → enterPickupWorld, leavePickupWorld, updatePickupPosition, enterPickupZone, leavePickupZone, handlePickupDisconnect, cleanupAfkPlayers, refreshPickupHeartbeat, isInPickupWorld
 ```
 
-Every environment module exports a single factory function that creates a `THREE.Group`, populates it, adds it to `scene`, and returns it. `hoops.js` and `park.js` also populate `scene.userData` with collider arrays. `player.js` and `ball.js` export additional update/interaction functions.
+Every environment module exports a single factory function that creates a `THREE.Group`, populates it, adds it to `scene`, and returns it. `hoops.js` and `park.js` also populate `scene.userData` with collider arrays. `player.js` and `ball.js` export additional update/interaction functions. Networking modules are organized under `js/net/` (client) and `server/` (server) with a shared protocol format.
 
 ---
 
 ## Detailed File Guide
 
-### `main.js` (~5288 lines) — The Brain
+### `main.js` (~6448 lines) — The Brain
 
-This is the orchestrator. It owns the renderer, scene, camera, controls, all gameplay state machines, teammate/opponent AI, stamina system, and the animation loop.
+This is the orchestrator. It owns the renderer, scene, camera, controls, all gameplay state machines, teammate/opponent AI, stamina system, sky/celestial system, multiplayer integration, pickup world mode, and the animation loop.
 
 **Key systems:**
 
@@ -149,7 +200,7 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
    - `'player'` — Third-person. OrbitControls target follows the player. Arrow keys/WASD move player relative to camera facing.
 3. **Start menu**: Time-driven orbit camera (`startOrbitElapsed` drives angle computation, not delta-accumulated) with position smoothing via `startOrbitCamPos` lerp. Avoids jitter from `smoothedDelta` convergence.
 4. **Day/Night system**: `dayNightTransition` lerps from 0 (day) to 1 (night). `applyDayNightState(t)` updates fog, exposure, sky texture swap, light intensities, window glow, lamp glow, and celestial body opacity.
-5. **Delta smoothing**: `smoothedDelta += (clampedDelta - smoothedDelta) * 0.18` prevents jitter from frame time spikes
+5. **Delta smoothing**: `smoothedDelta += (clampedDelta - smoothedDelta) * 0.45` prevents jitter from frame time spikes
 6. **Loading sequence**: `buildScene()` creates everything in order with progress bar updates
 7. **Animation loop**: Updates controls, player, opponents, teammates, punch collisions, basketball, scoring, arc visualization, power meter, pass line, ball locator indicators, dunk, seating, day/night, net sway, and leaf sway every frame
 8. **Tag system**: After scene build, `collectTransparentObjects()`, `collectAnimatedObjects()`, and `tagCityWindows()` traverse the scene tree to tag/cache meshes for runtime behavior
@@ -183,6 +234,12 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 27. **Ball last-touch tracking**: `basketballData._lastTouchRef` is set on every ball interaction: pickup, shoot, pass release, catch, body collision bounce, and punch-forced drop (puncher credited). Used exclusively by the OOB system to award possession to the team that did NOT last touch the ball.
 28. **AI intelligence improvements**: Obstacle-aware drive target selection (5 candidates scored by defender clearance), swarm detection (`nearbyEnemyCount` ≥ 2 triggers faster pass decisions), pass lane detection (perpendicular distance from pass vector to defenders with 1.5m lane width and 4x penalty), slot-based off-ball positioning (5 predefined court slots replace random offset wander), and court-constrained wander (opponents biased +Z, teammates biased -Z).
 29. **Tip-off layout**: `SOLO_TIPOFF_LAYOUT` positions player at (0, y, 0.9) facing -Z and contest opponent at (0, y, -0.9) facing +Z (directly across at center court). Referee at (1.5, y, 0) to the side (not behind benches). Ball held and tossed from dead center (0, y, 0) between jumpers. Referee exits to (-8.8, y, -3.0) on the blacktop after toss.
+30. **Block mechanic**: B key hold sets `playerBlocking = true`. Zeros all movement, cancels shooting/passing stances, negates incoming punch hits (`if (target.blocking) continue`). Drains stamina at `STAMINA_BLOCK_DRAIN` (7.2/sec). Blocked when stamina < `STAMINA_EXHAUSTED` (5). Serialized in multiplayer via `pd.blocking` on playerData.
+31. **Sky system**: `createSkySystem()` builds Three.js `Sky` shader dome, 3 cloud `PlaneGeometry` layers (near/far/detail) with wind-driven UV scrolling, star dome, and night tint dome. `updateSkyAndCelestial(delta)` advances `skyElapsed`, updates sun/moon orbital positions, cloud drift, and star/night opacity based on `dayNightTransition`. `toggleAutoCycle()` enables sinusoidal auto-transition over `AUTO_CYCLE_PERIOD_SEC` (210s). `cycleSkyQuality()` rotates LOW→MED→HIGH controlling cloud visibility.
+32. **Multiplayer integration**: `startOnline()` shows nickname prompt → connects → opens lobby UI. `handleGameStart(msg)` receives `START_GAME` with slot assignments, creates teammates/opponents, starts host-sync or guest-sync based on `msg.hostId`. Host runs full simulation, calls `broadcastAction()` for discrete events. Guest applies state via `applyGuestState(delta)` which deserializes entity positions, ball state, and scores from interpolated snapshots. Remote human players are detected per-slot in the opponent/teammate update loops via `getSessionForSlot()` / `getRemoteInput()`.
+33. **Pickup world mode**: `enterPickupWorld()` sets `pickupWorldActive = true`, `gameMode = 'pickup-world'`, positions player at spawn, creates queue zones, starts `pickupSync`. The animate loop detects `pickupWorldActive` and skips all gameplay state machines (shooting, passing, dunking, AI, scoring, stamina drain, OOB, etc.) — only `updatePlayer()` for movement, `updatePickupWorld()` for zone proximity + remote players, and camera follow run. `cleanupPickupWorld()` removes remote players, hides zones, stops sync. `exitPickupWorldToMenu()` returns to mode select.
+34. **Pickup queue zones**: `createPickupQueueZones()` builds two `THREE.Group` zones with ground ring, fill circle, 3 slot markers, beacon pillar, and point light. `checkPickupZoneProximity()` runs each frame, detects player XZ distance to zone centers, and calls `pickupEnterZone()` / `pickupLeaveZone()` via pickup-sync. `animatePickupZones(delta)` pulses ring opacity, rotates beacons, and updates slot fills based on `pickupQueueState`. Queue state (`hq`, `aq`, `cd`) received from server world state broadcasts.
+35. **Remote pickup players**: `handlePickupWorldState(msg)` creates/updates/removes remote player entities. New players get a `createPlayer()` call with team-colored jersey + `createNametagSprite()` nametag. `updateRemotePickupPlayers(delta)` smoothly interpolates position/angle at 12x lerp rate and drives walk animation from position change speed.
 
 **Important global state:**
 - `lightingGroup` — reference to the lighting group, traversed during day/night updates
@@ -218,13 +275,28 @@ This is the orchestrator. It owns the renderer, scene, camera, controls, all gam
 - `passTargetTeammate` — reference to the teammate being passed to
 - `passQueued` — set true on Z keypress when holding ball with teammates present
 - `inboundState` — OOB inbounding state machine object (null when not active); contains `phase`, `team`, `spot`, `inbounder`, `target`, `refWalking`, `passTimer`
+- `gameMode` — `'solo'` | `'freeplay'` | `'online'` | `'pickup-world'` | `null`
+- `blockHeld` — true while B key is held down
+- `pickupWorldActive` — true when in the immersive pickup lobby (gates all gameplay state machines)
+- `pickupWorldSessionId` — this client's session ID in the pickup world
+- `pickupRemotePlayers` — `Map<sessionId, { playerData, nametag, targetX, targetZ, targetAngle, teamColor }>`
+- `pickupZoneHome`, `pickupZoneAway` — `THREE.Group` queue zone visuals
+- `pickupQueueState` — `{ hq: [], aq: [], cd: -1 }` — queue rosters and countdown from server
+- `pickupMyZone` — `null` | `'home'` | `'away'` — which zone the local player is standing in
+- `skyElapsed`, `autoCycleEnabled`, `autoCycleClock`, `skyQualityLevel` — sky/celestial animation state
+- `skyDome`, `starDome`, `nightTintDome`, `cloudLayerNear/Far/Detail` — sky mesh references
 
 **Exposed to window (for HTML button onclick):**
 - `window.switchCameraMode(mode)`
 - `window.toggleTransparentHelpers()`
 - `window.toggleDayNight()`
+- `window.toggleAutoCycle()`
+- `window.cycleSkyQuality()`
 - `window.dropBall()`
-- `window.startGame()`
+- `window.startSoloGame()`
+- `window.startOnline()`
+- `window.startFreePlay()`
+- `window.exitPickupWorldToMenu()`
 - `window.addTeammate()`
 - `window.addOpponent()`
 
@@ -331,9 +403,9 @@ rimCenterZ = backboardFaceZ - side * (RIM_FROM_BACKBOARD + RIM_RADIUS)
 ```
 The `side` variable (-1 or +1) ensures everything faces the correct direction on both ends.
 
-### `park.js` (~1195 lines) — The Park Environment
+### `park.js` (~1759 lines) — The Park Environment
 
-The largest file. Creates everything between the court and the city.
+Creates everything between the court and the city, including a pavilion and pond.
 
 **Fencing system** (`createFencing`):
 - Fence boundary: `halfW = COURT_WIDTH/2 + 4.5 = 12.12`, `halfL = COURT_LENGTH/2 + 6.0 = 20.325`
@@ -362,35 +434,53 @@ The largest file. Creates everything between the court and the city.
 
 **Seat data**: Sets `scene.userData.parkSeats` — an array of `{ x, y, z, facing }` objects for bench and bleacher seat positions. Used by the seating system in main.js. Both `createBenches()` and `createBleachers()` populate this array.
 
-**Trees** (`createTrees`): ~30 trees of 3 types (deciduous, oak, pine) with procedural textures and leaf sway animation via `userData.isLeaves`. Positioned throughout the park avoiding the court/fence area.
+**Trees** (`createTrees`): Deterministic placement via `stableNoise2D` for consistent positioning across sessions. Multiple tree types (deciduous, oak, pine) with procedural textures, palette-based coloring, and leaf sway animation via `userData.isLeaves`. Additional ring of skyline trees at greater distance.
+
+**Pavilion** (`createPavilion`, center at -32, -30):
+- Octagonal stone platform (radius 4.8m) with metal edge trim
+- 8 stone columns with capitals/bases (each has cylinder collider)
+- Peaked conical wooden roof with overhang, underside disc, trim ring, finial
+- 8 wooden crossbeams under roof connecting columns to center
+- 6 built-in wooden bench seats with metal legs
+
+**Pond** (`createPond`, center at 30, 30):
+- Elliptical water surface (4.5m x 3.5m) with transparent blue-green material
+- Mud/earth border ring, 22 irregular stones + 3 accent rocks
+- 4 reed/cattail clusters with leaf sway animation
+- 6 lily pads (some with pink flowers) on water surface
+- Two overlapping AABB colliders prevent walking into water
 
 **Other elements:**
 - Benches: 6 park benches inside fence at x=±10.5 along the sidelines
 - Bleachers: 8 total — 4 along long sides (3-row, 5m wide), 4 behind hoops (2-row, 4m wide)
 - Trash cans, drinking fountain, scattered leaves/pebbles
-- Walking paths: paver-textured paths forming a perimeter loop, diagonal corner paths, and cardinal exit paths
+- Walking paths: dual-loop system — inner perimeter loop (22m) + outer ring (38m) with 4 cardinal spokes, 4 diagonal connectors, feature spur paths to pavilion and pond, and 4 cardinal exits to sidewalks
+- Perimeter planting beds: `createPerimeterPlantingBeds()` adds landscaping between fence and sidewalk
 
-### `city.js` (~707 lines) — The NYC Surroundings
+### `city.js` (~1127 lines) — The NYC Surroundings
 
 Creates the urban environment around the park on all four sides.
 
 **Layout** (from park outward):
 1. **Sidewalks** (52-55.5m from center): concrete with expansion joint grid texture, raised curbs
 2. **Streets** (55.5-61.5m): asphalt with yellow dashed center lines, white edge lines, corner fillers
-3. **Building blocks** (62m+): procedurally generated on a grid with random sizes, heights, and colors
+3. **City ground plane** (62m+): concrete pavement beneath all building districts with procedural texture (slab grid, wear marks, oil stains)
+4. **Building blocks** (62m+): procedurally generated on a grid with random sizes, heights, and colors
 
 **Buildings**:
-- Colors from brownstone, concrete, brick, and glass/steel palettes
-- Height scales with distance from park (closer = shorter, zoning feel)
-- Features: window grids (emissive rectangles on all faces, ~40% lit), metal cornices, ground floor awnings
-- Rooftop details: NYC water towers (wooden tank + cone roof + metal legs + bands), AC units
-- Windows are tagged during `tagCityWindows()` by matching emissive hex color: `0xffcc66` = lit, `0x334455` = dark
+- Colors from brownstone, concrete, brick, and glass/steel palettes with material caching for performance
+- District-based height variation (closer = shorter, zoning feel)
+- Features: window grids (emissive rectangles on all faces, ~40% lit), metal cornices, ground floor awnings, facade articulation
+- Rooftop details: NYC water towers (wooden tank + cone roof + metal legs + bands), AC units, rooftop silhouettes
+- Windows are tagged during `tagCityWindows()` by matching emissive hex color: `0xffcc66`/`0xffcc70` = lit, `0x334455`/`0x26384a` = dark
 
-**Street props**: fire hydrants, street signs (dual perpendicular plates), newspaper boxes, traffic lights with colored bulbs
+**Street props**: fire hydrants, street signs (dual perpendicular plates), newspaper boxes, traffic lights with colored bulbs, sidewalk planters, crosswalks
+
+**Building colliders**: Sets `scene.userData.cityColliders` — AABB colliders for every building footprint (with 0.3m padding). Merged into `playerColliders` in main.js. Prevents players from walking through buildings. Broadphase culling keeps these performant since buildings are 62m+ from court center.
 
 **Parked cars**: ~20 cars along all streets. Each has body, cabin (translucent glass), 4 wheels, headlights, taillights. Random colors from 7 options.
 
-### `lighting.js` (~86 lines) — Scene Lighting
+### `lighting.js` (~94 lines) — Scene Lighting
 
 Returns a `lightGroup` with all lights tagged by `userData.lightRole` for the day/night system.
 
@@ -407,7 +497,7 @@ Returns a `lightGroup` with all lights tagged by `userData.lightRole` for the da
 
 Lamp light positions are calculated to match the lantern positions in park.js: `lanternX = x + facing * 1.4`, `lanternY = 5.05`.
 
-### `player.js` (~1184 lines) — The Player Character
+### `player.js` (~1233 lines) — The Player Character
 
 **Model** (1.88m tall, basketball player proportions):
 - Head: sphere (r=0.105) + headband torus
@@ -488,11 +578,12 @@ All animation is done by rotating the pivot groups around their X axis (and Y/Z 
 - Space sets `playerInput.jump`
 - Z queues ball pickup attempt (with pickup assist magnetism) OR pass to teammate (when holding ball + teammates exist)
 - X enters shooting stance (when holding ball, grounded) / fires shot or pass (when in stance) / triggers dunk (when airborne near rim)
+- B hold enters blocking stance (drains stamina, cancels stances, negates punches)
 - C cancels shooting/passing stance, or toggles seating on nearby bench/bleacher
-- V throws a punch (blocked during stances, stun, seated, dunking)
+- V throws a punch (blocked during stances, stun, seated, dunking, blocking)
 - Player smoothly rotates to face movement direction (or velocity-based A/D rotation in stance)
 
-### `ball.js` (~1160 lines) — The Basketball
+### `ball.js` (~1169 lines) — The Basketball
 
 The most complex gameplay module. Handles ball creation, physics simulation, environment/player collision (including torus rim collision), held ball state machine (idle hold + dribbling + shooting/passing stance), dribble-time collision release, shooting with projectile physics, passing between players, teammate catch detection, and force-drop on punch.
 
@@ -639,6 +730,104 @@ The most complex gameplay module. Handles ball creation, physics simulation, env
 - Ball pops up (velocity.y = 3.0) and pushes away in hit direction (2.5 m/s)
 - Optional `puncher` parameter sets `_lastTouchRef` on the ball for OOB possession tracking
 
+### `index.html` (~2052 lines) — Entry Point & All UI
+
+The single HTML file contains everything: loading screen, mode select overlay, all multiplayer lobby screens, gameplay HUD, and CSS.
+
+**Major UI layers (z-index order):**
+1. **Loading screen** — animated progress bar, shown during `buildScene()`
+2. **Mode select overlay** (`#mode-select`, z-index 900) — glassmorphism card layout with 3 options:
+   - **Solo** (3v3 vs AI with tip-off sequence)
+   - **Online** (multiplayer — shows nickname prompt → lobby)
+   - **Free Play** (sandbox mode)
+   - Title: "HOOPS ROYALE" in orange accent with layered text-shadow
+   - Subtitle with animated live-pulse dot
+3. **Multiplayer lobby** (`#mp-lobby`) — full multiplayer flow:
+   - **Nickname prompt** (`#nickname-prompt`) — input + go button, saved to localStorage
+   - **Lobby tabs**: Quick Match (join code + room list), Create Match (name, public toggle, score target), Pickup (enter immersive lobby)
+   - **Waiting room** (`#mp-waiting-room`) — room code, home/away slots, switch team, ready/start, chat log
+   - **Connection status** — dot indicator + ping display
+4. **Gameplay HUD**:
+   - **Unified scoreboard** (`#solo-scoreboard`) — glassmorphism, centered (solo) or upper-left corner (`sb-corner` class, free play)
+   - **Neon title** — "HOOPS ROYALE" in `#ff3a2f` with layered text-shadow glow
+   - **Stamina HUD** — vertical bar with gradient fill (green→yellow→red), percentage label
+   - **Shot feedback popup** — "Bucket +2" / "OPP Dunk +2" / "OUT OF BOUNDS" with CSS fade
+   - **Power meter** — vertical bar with track, sweet spot zone, animated marker
+   - **Countdown overlay** — large number during tip-off / pickup countdown
+5. **Pickup world HUD** (`#pickup-world-hud`) — home/away queue slots, contextual prompt text, glassmorphism styling
+6. **Controls bar** (`#controls-bar`) — bottom bar showing context-sensitive control hints
+7. **UI buttons** — 8 buttons for free play mode (camera modes, ball drop, panels, day/night, add players)
+
+**CSS patterns**: dark theme, `backdrop-filter: blur()` glassmorphism, `hud-hidden` utility class for show/hide transitions, responsive `clamp()` typography. Import map pointing to Three.js CDN v0.162.0.
+
+### Client Networking (`js/net/`)
+
+**`protocol.js`** (~42 lines): Enum-like message type constants exported as named strings. Mirrors `server/protocol.js` exactly. Types cover: lobby (HELLO, LIST_ROOMS, CREATE_ROOM, JOIN_ROOM, etc.), pickup world (PICKUP_ENTER_WORLD, PICKUP_POSITION, PICKUP_WORLD_STATE, PICKUP_ZONE_ENTER/LEAVE), game relay (PLAYER_INPUT, GAME_STATE, GAME_ACTION, GAME_OVER), connection (PING/PONG).
+
+**`connection.js`** (~242 lines): Singleton `Connection` class wrapping native WebSocket. Features:
+- Auto-detect server URL from `window.location` (HTTP → WS protocol)
+- `connect(nickname, url?)` returns a Promise resolving with `sessionId` on HELLO response
+- Reconnection with exponential backoff (1s, 2s, 4s, 8s, 10s)
+- Heartbeat every 25s (PING/PONG with latency measurement)
+- Message dispatch: `on(type, handler)` / `off(type, handler)` pattern
+- Session restoration: sends `sessionId` in HELLO for reconnect
+
+**`lobby-ui.js`** (~608 lines): All DOM interactions for multiplayer screens. Manages:
+- Nickname prompt (saved to `localStorage` as `hr_nickname`)
+- Tab switching between Quick Match / Create Match / Pickup panels
+- Room list polling (`LIST_ROOMS` every 3s)
+- Room creation with settings (name, public toggle, score target)
+- Waiting room: slot display, team switching, ready toggle, start button (host only), kick, chat
+- Pickup tab: join button triggers `JOIN_PICKUP` → `PICKUP_ENTER_WORLD` → calls `onPickupEnter` callback
+- `initLobbyUI(gameStartCallback, pickupEnterCallback)` wires everything up from main.js
+
+**`host-sync.js`** (~260 lines): Runs on the host browser during online games.
+- `startHostSync(opts)` takes references to playerData, teammates, opponents, basketball, and score/phase getters
+- Broadcasts serialized state every 50ms (20Hz) via `GAME_STATE` messages
+- Entity serialization: position, rotation, velocity, grounded, jumping, moveBlend, walkCycle, stun, punch state, blocking, stamina
+- Ball serialization: position, velocity, held-by (resolved to `'host'`/`'tm0'`/`'opp1'`/etc.), dribble phase, shooting/passing stance, sleeping, active
+- Receives remote inputs via `PLAYER_INPUT` messages, stored in `remoteInputs` Map by sessionId
+- `getRemoteInput(sessionId)` / `getSessionForSlot(team, slot)` used by main.js to apply remote inputs to entity slots
+
+**`guest-sync.js`** (~288 lines): Runs on guest browsers during online games.
+- Receives `GAME_STATE` snapshots into a ring buffer (max 10)
+- Interpolation: uses two most recent snapshots with `INTERP_DELAY=3` for jitter absorption
+- `getInterpolatedState()` returns interpolated players, ball, scores, gamePhase
+- Sends local input at 60Hz via `PLAYER_INPUT` messages
+- `getMyPlayerIndex()` maps session's team+slot to the 6-element player array (home 0-2, away 3-5)
+
+**`pickup-sync.js`** (~105 lines): Pickup world networking.
+- Sends position at 10Hz (`PICKUP_POSITION` with x, z, angle rounded to 2 decimals)
+- `setPosition(x, z, angle)` called by main.js each frame
+- `enterZone(team)` / `leaveZone()` send `PICKUP_ZONE_ENTER` / `PICKUP_ZONE_LEAVE`
+- Receives `PICKUP_WORLD_STATE` and passes to callback for main.js to handle
+
+### Server (`server/`)
+
+**`server.js`** (~369 lines): Combined HTTP + WebSocket entry point.
+- HTTP: serves static files from project root with MIME type mapping, directory traversal protection, `no-cache` headers
+- WebSocket: message router dispatching to rooms.js and pickup.js based on message type
+- Session tracking: `sessions` Map (sessionId → { ws, nickname }), 60s reconnection window
+- Heartbeat: PING/PONG relay, also refreshes pickup AFK timer
+- Cleanup timers: stale sessions every 60s, AFK pickup players every 10s
+
+**`rooms.js`** (~354 lines): Room lifecycle management.
+- `createRoom(sessionId, nickname, ws, settings)` — generates 4-char room code, creates room with settings (name, public, scoreTarget, mode)
+- `joinRoom(sessionId, nickname, ws, code, team?)` — joins existing room, auto-assigns team if not specified
+- `leaveRoom(sessionId)` — removes player, deletes room if empty, transfers host if host leaves
+- `switchTeam(sessionId)` / `toggleReady(sessionId)` — lobby interactions with room broadcasts
+- `startGame(sessionId)` — validates all ready, generates slot assignments ({ sessionId: { team, slot, nickname } })
+- `relayFromHost(sessionId, msg)` / `relayInputToHost(sessionId, msg)` — game message relay (host→guests, guest→host)
+- `broadcastToRoom(room, msg)` — sends to all room players
+
+**`pickup.js`** (~304 lines): Persistent pickup world state.
+- `worldPlayers` Map (sessionId → { ws, nickname, x, z, angle, team, queued, lastHeartbeat })
+- `homeQueue[]` / `awayQueue[]` — ordered sessionId arrays for each team zone
+- `enterPickupZone(sessionId, team)` — adds to queue (max `TEAM_SIZE=3`), checks game readiness
+- When both queues full: 5-second countdown starts. On completion, `launchPickupGame()` creates a room, joins all 6 players, auto-starts the game, removes them from the world
+- World state broadcast at 10Hz to all players: serialized positions, queue rosters (nicknames), countdown
+- `cleanupAfkPlayers()` removes players inactive for 45s
+
 ### Stamina Constants (in `main.js`)
 
 | Constant | Value | Purpose |
@@ -656,6 +845,7 @@ The most complex gameplay module. Handles ball creation, physics simulation, env
 | `STAMINA_EXHAUSTED` | 5 | Below this: can't punch/shoot/dunk |
 | `STAMINA_AI_SEEK_BENCH` | 22 | AI drops ball and seeks bench below this |
 | `STAMINA_AI_LEAVE_BENCH` | 85 | AI stands up from bench above this |
+| `STAMINA_BLOCK_DRAIN` | 7.2/sec | Drain while holding block stance |
 | `STAMINA_SPEED_PENALTY` | 0.62 | Speed multiplier when stamina depleted |
 
 ### Opponent Shooting / Dunk Constants (in `main.js`)
@@ -687,20 +877,6 @@ The most complex gameplay module. Handles ball creation, physics simulation, env
 | `OOB_PASS_TIMEOUT` | 6.0s | Max time for inbounder to pass before cancellation |
 | `OOB_SETTLE_DELAY` | 0.4s | Brief delay after OOB before triggering inbound |
 
-### `index.html` (~851 lines) — Entry Point
-
-- Loading screen with animated progress bar
-- **Start menu overlay**: glassmorphism panel with "Click To Begin" button, title, and eyebrow text
-- **Neon title text**: "HOOPS ROYALE" in `#ff3a2f` with layered text-shadow glow (7px inner, 18px mid, 40px outer). Appears below scoreboard in free play (`title-under-sb` class at `top: 78px`), upper-left in solo mode.
-- **Unified scoreboard** (`#solo-scoreboard`): Glassmorphism panel showing both team scores + makes/attempts. Centered by default (solo mode), moves to upper-left corner via `sb-corner` CSS class (free play mode, `left: 20px; top: 16px; transform: none`).
-- **Stamina HUD** (left side, below score): Vertical bar with gradient fill (green → yellow → red), percentage label. Glassmorphism style. Hidden in free play mode.
-- **Shot feedback popup** (center): "Bucket +2" / "OPP Dunk +2" / "OUT OF BOUNDS" / "Total N" text with CSS opacity/transform transitions
-- **Power meter** (right side): Vertical bar with track, sweet spot zone, animated marker, and value label. Styled with gradient background, border radius, and backdrop blur
-- 8 UI buttons: Orbit Cam, Free Roam, Drop In, Ball Drop, Panels toggle, Day/Night toggle, Add Teammate (red), Add Opponent (blue)
-- Controls hint text at bottom (updates per camera mode and inbound state, mentions Z pass, V punch, Z to pass in during inbound)
-- CSS: dark theme, minimal UI, backdrop blur on buttons, `hud-hidden` utility class for fade in/out
-- Import map pointing to Three.js CDN (v0.162.0)
-
 ---
 
 ## Collision System Architecture
@@ -720,8 +896,9 @@ The collision system has two independent implementations sharing the same collid
 ### Collider sources
 
 - **`hoops.js`** → `scene.userData.hoopColliders`: poles (cylinder), backboards (AABB)
-- **`park.js`** → `scene.userData.parkColliders`: benches (AABB), trash cans (cylinder), bleachers (AABB), fence posts (cylinder)
-- **`main.js`** merges them: `playerColliders = hoopColliders.concat(parkColliders)`, plus dynamically added opponent cylinder colliders (tagged `_isOpponentCollider`, `_opponentRef`)
+- **`park.js`** → `scene.userData.parkColliders`: benches (AABB), trash cans (cylinder), bleachers (AABB), fence posts (cylinder), pavilion columns (cylinder), pond (AABB pair)
+- **`city.js`** → `scene.userData.cityColliders`: building footprints (AABB, ~100+ colliders with 0.3m padding)
+- **`main.js`** merges them: `playerColliders = hoopColliders.concat(parkColliders).concat(cityColliders)`, plus dynamically added opponent cylinder colliders (tagged `_isOpponentCollider`, `_opponentRef`)
 
 ### Two collision resolvers
 
@@ -777,52 +954,59 @@ Everything is in meters with Y up. Court center is at world origin (0, 0, 0).
 | Buildings | 62m+ | | Procedural grid |
 | Player spawn | (0, -0.265, 4) | | Near center court, y offset for feet |
 | Ball drop | (0, 2.25, 0) | | Center court, 2.25m up |
+| Pickup zone (home) | 0 | -22 | 3.0m radius, behind -Z gate |
+| Pickup zone (away) | 0 | 22 | 3.0m radius, behind +Z gate |
+| Pickup spawn | 5 | -18 | Where player appears when entering pickup world |
+| Pavilion | -32 | -30 | Octagonal shelter, radius 4.8m, NW quadrant |
+| Pond | 30 | 30 | Elliptical, 4.5m x 3.5m, SE quadrant |
+| City ground | 62m+ | 62m+ | Concrete pavement beneath all building districts |
 
 ---
 
 ## Known Issues / Technical Debt
 
-1. **Window tagging is fragile** — relies on matching exact hex color values (`0xffcc66`, `0x334455`). If materials change, tags break.
-2. **Sky transition** — day/night sky still swaps at `t=0.5` rather than true texture blending. Could use shader-based blend.
-3. **Lamp light positions hardcoded in lighting.js** — must be manually kept in sync with lamp positions in park.js.
-4. **No boundary constraints on player** — can walk beyond the court, outside the fence (through gate openings), and into the city.
-5. **Dribble only while grounded** — ball returns to chest hold if player jumps while dribbling. No mid-air dribble or ball release.
-6. **Shooting only while stationary** — player must be standing still and grounded to enter shooting stance. No jump shots or running shots yet.
-7. **main.js is very large** (~5288 lines) — gameplay systems (scoring, dunking, seating, stamina, power meter, teammate/opponent AI, indicators, passing, OOB/inbounding) should be extracted into separate modules. This is the biggest and most pressing technical debt.
-8. **Dynamic collider array allocation** — `updateOpponentAI` / `updateTeammateAI` build filtered collider arrays each frame. Could be optimized with reusable scratch arrays.
-9. **Duplicate dunk code** — player dunk (`findDunkRim`/`startDunk`/`updateDunk`) and opponent/teammate dunk (`findOppDunkRim`/`startOppDunk`/`startTeammateDunk`/`updateOppDunk`) still have substantial duplication.
-10. **No ball stealing mechanic** — defenders still gain possession via pickup, punch-forced drop, or catch only. No reach-in steal/interception input/state yet.
-11. **Indicator/stamina overlap tuning** — under-foot radar arc and stamina arc can visually compete at some camera angles; may need ordering/spacing/opacity options.
+1. **Window tagging is fragile** — relies on matching exact hex color values (`0xffcc66`/`0xffcc70`, `0x334455`/`0x26384a`). If materials change, tags break.
+2. **Lamp light positions hardcoded in lighting.js** — must be manually kept in sync with lamp positions in park.js.
+3. **Partial boundary constraints** — players can walk through fence gates and roam the park freely. Building colliders prevent walking through buildings, but no outer world boundary exists.
+4. **Dribble only while grounded** — ball returns to chest hold if player jumps while dribbling. No mid-air dribble or ball release.
+5. **Shooting only while stationary** — player must be standing still and grounded to enter shooting stance. No jump shots or running shots yet.
+6. **main.js is critically large** (~6448 lines) — gameplay systems (scoring, dunking, seating, stamina, power meter, teammate/opponent AI, indicators, passing, OOB/inbounding, sky system, pickup world, multiplayer integration) should be extracted into separate modules. This is the biggest and most pressing technical debt.
+7. **Dynamic collider array allocation** — `updateOpponentAI` / `updateTeammateAI` build filtered collider arrays each frame. Could be optimized with reusable scratch arrays.
+8. **Duplicate dunk code** — player dunk (`findDunkRim`/`startDunk`/`updateDunk`) and opponent/teammate dunk (`findOppDunkRim`/`startOppDunk`/`startTeammateDunk`/`updateOppDunk`) still have substantial duplication.
+9. **No ball stealing mechanic** — defenders still gain possession via pickup, punch-forced drop, or catch only. No reach-in steal/interception input/state yet.
+10. **Indicator/stamina overlap tuning** — under-foot radar arc and stamina arc can visually compete at some camera angles; may need ordering/spacing/opacity options.
+11. **Multiplayer guest actions incomplete** — remote players can move but gameplay actions (shoot, pass, punch, dunk, pickup) from guest inputs are not yet fully wired into the host simulation beyond basic movement.
+12. **Pickup world jersey color recreation** — when a remote player changes team zone, the entire player model is destroyed and recreated with the new jersey color. Should swap material instead.
+13. **CLAUDE.md itself is very large** — this documentation file exceeds 1000 lines. As the project grows, consider splitting into multiple docs or auto-generating parts from code comments.
+14. **No multiplayer latency compensation** — guest-sync uses simple interpolation with `INTERP_DELAY=3` snapshots. No client-side prediction, rollback, or server reconciliation yet.
 
 ---
 
 ## Where We Left Off / Next Steps
 
-As of **April 3, 2026**, the session delivered OOB/inbounding, AI intelligence overhaul, tip-off repositioning, and unified scoreboard/HUD:
-- NBA-compliant out-of-bounds system with last-touch-rule, referee retrieval, throw-in spot calculation, and forced pass-in mechanic
-- Ball `_lastTouchRef` tracking across all interactions (pickup, shoot, pass, catch, body collision, punch)
-- AI intelligence overhaul: obstacle-aware drive targets (5-candidate sampling), swarm detection, pass lane detection (1.5m width, 4x penalty), slot-based off-ball positioning (5 court slots), court-constrained wander
-- Tip-off repositioned: player/opponent directly across at center (X=0), referee to the side (X=1.5), ball held/tossed from dead center
-- Unified glassmorphism scoreboard across solo + free play (corner variant via CSS class)
-- Neon red "HOOPS ROYALE" title styling with layered text-shadow glow
-- Stamina HUD hidden in free play mode
+As of **April 8, 2026**, the project has shipped 8 PRs total. The most recent work (PRs #6–#9) added:
+- **Full multiplayer system** (PR #6): WebSocket host-client relay, lobby UI, room management, host-sync (20Hz), guest-sync (interpolation + 60Hz input), slot assignments, pickup queue
+- **Dynamic sky system + park/city polish** (PR #7): Three.js Sky shader, 3 cloud layers, star dome, celestial orbit, 210s auto-cycle, quality controls. Deterministic trees, planting beds, crosswalks, planters, facade articulation, rooftop silhouettes, material caching
+- **Immersive pickup world lobby** (PR #8): Walk-around 3D park lobby replacing text-based queue. Walk-up queue zones at court gates, remote player rendering with nametags, 10Hz position sync, auto-game-launch, pickup HUD. All gameplay state machines gated behind `pickupWorldActive`
+- **Block mechanic**: B key hold for defensive stance (drains stamina, cancels stances, negates punches)
+- **Pickup world UX improvements** (PR #9): Split controls (WASD camera, arrows movement), persistent authoritative camera angles, jersey color change on zone queue, closer camera distance, remote player jump animation, glassmorphism pickup prompt, park pavilion, decorative pond, dual-loop path network, city ground plane, building colliders
 
 ### Immediate next steps
 1. **Ball stealing mechanic** — add reach-in steals/interception logic (input + AI usage + possession transitions).
 2. **Sound pass** — bounce, swish, rim/chain, punch impact, ambient park/city loop.
 3. **Structured game modes** — possession flow, check-ball, scoring targets, and 1v1/3v3 rulesets (OOB/inbounding is now in place as a foundation).
 4. **AI polish** — help defense, smarter shot selection (open vs contested), and transition play.
-5. **Indicator/stamina UX tuning** — optional size/opacity controls and clearer layering at steep camera angles.
+5. **Multiplayer guest actions** — wire guest shoot/pass/punch/dunk/pickup inputs into host simulation (currently only movement is relayed).
 
 ### Medium-term
 6. **Shot type expansion** — jumpers/layups/runners and movement-contingent shot choices.
-7. **`main.js` refactor** — split AI/scoring/indicator/stamina/OOB systems into focused modules (~5288 lines is critically large).
+7. **`main.js` refactor** — split AI/scoring/indicator/stamina/OOB/sky/pickup-world systems into focused modules (~6448 lines is critically large).
 8. **Net interaction polish** — stronger ball/net reaction cues and richer feedback.
 9. **Player customization** — jersey/accessory options and visual identity layer.
+10. **Multiplayer polish** — client-side prediction, latency compensation, reconnection handling during games.
 
 ### Long-term vision
-10. **Court progression + career loop**.
-11. **Multiplayer** (WebSocket authoritative flow).
+11. **Court progression + career loop**.
 12. **Mobile controls** (touch UI/assist layer).
 
 ---
@@ -862,7 +1046,7 @@ As of **April 3, 2026**, the session delivered OOB/inbounding, AI intelligence o
 
 15. **Scoring detection architecture** — `refreshRimSensors()` extracts rim positions from `isRim` colliders at scene build. `updateScoringSystem(delta)` runs every frame and uses a two-phase detection: (1) entry detection when ball crosses rim Y-plane from above with sufficient downward velocity and is within the entry radius, (2) confirmation when ball drops 0.28m below rim while staying centered. This prevents false positives from balls bouncing on the rim.
 
-16. **Gameplay state machine priority** — In the animate loop, state machines are checked in priority order: stun > seating > dunk > shooting stance > passing stance > dunk trigger (airborne) > stance entry (grounded) > pass entry. Each higher-priority state zeros input and blocks lower states. Stun cancels all active stances and blocks all actions. The `carryState` object passed to `updatePlayer()` includes flags for all states: `holding`, `shooting`, `dribbling`, `dunking`, `hanging`, `seated`, `seatSettled`. For opponents, the priority is: active dunk (`_dunkState`) > stun > bench sitting (`_aiSitState`) > ball holding (with sub-priorities: low stamina → dunk attempt → shoot prep → pass → dribble toward rim) > ball pursuit > chase enemy with ball > positioning > wander.
+16. **Gameplay state machine priority** — In the animate loop, state machines are checked in priority order: pickup world active (skip all gameplay) > stun > blocking > seating > dunk > shooting stance > passing stance > dunk trigger (airborne) > stance entry (grounded) > pass entry. Each higher-priority state zeros input and blocks lower states. Stun cancels all active stances and blocks all actions. Blocking cancels all stances, zeros movement, and negates punches. The `carryState` object passed to `updatePlayer()` includes flags for all states: `holding`, `shooting`, `dribbling`, `dunking`, `hanging`, `seated`, `seatSettled`, `blocking`. For opponents, the priority is: active dunk (`_dunkState`) > stun > bench sitting (`_aiSitState`) > ball holding (with sub-priorities: low stamina → dunk attempt → shoot prep → pass → dribble toward rim) > ball pursuit > chase enemy with ball > positioning > wander.
 
 17. **Multi-player collision architecture** — Opponents **and teammates** have cylinder colliders dynamically added to `playerColliders`. `updateOpponentColliders()` and `updateTeammateColliders()` sync collider positions each frame, and `updatePlayer()` now syncs each dynamic collider post-move to avoid stale overlap artifacts. Each AI filters out its own collider when calling `updatePlayer` to avoid self-collision. Ball collision in `updateBasketball` checks against `allPlayers` array (user + teammates + opponents) with per-player ignore via `_ignorePlayerRef`/`_ignorePlayerTimer`.
 
@@ -873,3 +1057,13 @@ As of **April 3, 2026**, the session delivered OOB/inbounding, AI intelligence o
 20. **Opponent dunk architecture** — Parallel to the player dunk system but stored per-opponent on `opp._dunkState` instead of the global `dunkState`. `updateOpponentAI` checks for active `_dunkState` at top priority (before stun check). The dunk decision happens in the ball-holding sub-state: when close to rim (< `OPP_DUNK_APPROACH_DIST` 2.8m) with enough stamina, 65% chance to dunk vs shoot. `startOppDunk` gives a jump boost (velocityY = 7.5) and sets up the same multi-phase animation. `updateOppDunk` runs the phases identically to `updateDunk` but operates on the opponent's position/state. `registerMadeBasket('Dunk')` handles score attribution via `_lastShooterRef`.
 
 21. **AI sitting architecture** — Each AI player has an optional `_aiSitState` object with phases: `walking` (approach bench, stop at 1.6m), `entering` (smooth lerp to `seat.y - SIT_ROOT_OFFSET`, face seat direction, 0.3s), `seated` (recover stamina at 22/sec, leave when stamina > 85), `exiting` (stand + step forward 0.8m in seat facing direction, 0.45s). During entering/seated/exiting, empty collider arrays `[]` are passed to `updatePlayer` to prevent the bench AABB from fighting the position lerps. Ball is force-dropped before entering sitting state. Catch detection skips players with `_aiSitState`.
+
+22. **Game mode architecture** — `gameMode` variable controls which UI and gameplay systems are active. `'solo'` = 3v3 AI with tip-off + scoreboard centered. `'freeplay'` = sandbox with corner scoreboard + debug buttons. `'online'` = multiplayer with host-sync or guest-sync active. `'pickup-world'` = immersive lobby with movement-only + zone proximity detection. Mode is set in `startSoloGame()`, `startFreePlay()`, `startOnline()`, `enterPickupWorld()`. The `setGameplayHudVisible()` function branches on gameMode to show/hide the correct UI elements.
+
+23. **Pickup world gating pattern** — The `pickupWorldActive` flag is checked at ~20 points throughout the animate loop to skip gameplay systems. The pattern is: the `cameraMode === 'player'` block runs `updatePlayer()` for movement, then checks `if (pickupWorldActive)` to run `updatePickupWorld()` and skip to camera follow. Later, the entire opponents/teammates/ball/scoring/stamina block is wrapped in `if (pickupWorldActive) { /* skip */ } else { ... }`. Day/night, sky, and ambient animation (net sway, leaf sway) always run regardless of mode. When adding new gameplay systems, they must be inside the `!pickupWorldActive` guard.
+
+24. **Multiplayer host vs guest pattern** — In the animate loop, `isHostSyncActive()` and `isGuestSyncActive()` control which code paths run. The host runs full local simulation and broadcasts state. Guests apply received state via `applyGuestState(delta)` and skip local AI (`skipLocalAI = isGuestSyncActive()`). For each entity slot, the host checks `getSessionForSlot(team, index)` to see if a human is controlling it — if yes, `getRemoteInput(sessionId)` provides their input instead of AI. Adding new gameplay actions for multiplayer requires: (1) adding the input flag to `host-sync.js:handleRemoteInput()`, (2) reading it in the entity update loop, (3) serializing relevant state in `serializeEntity()`/`serializeBall()`, (4) deserializing in `guest-sync.js:interpolateEntity()`.
+
+25. **Server architecture** — The server is minimal by design. `server.js` is a message router, not a game server — it relays messages between clients. `rooms.js` manages room state (players, teams, ready status, slot assignments) but doesn't run game logic. `pickup.js` is the one "smart" server module — it maintains world state, manages queues, and orchestrates game launches. All game simulation runs on the host client. The `ws` package is the only dependency.
+
+26. **Block mechanic architecture** — `blockHeld` tracks the B key state. In the animate loop, the blocking check runs after stun but before the shooting state machine. When blocking: `playerBlocking = true`, all movement zeroed, all stances cancelled, `drainStamina(pd, STAMINA_BLOCK_DRAIN * delta)`. In `updatePunchCollisions()`, `if (target.blocking) continue` skips punch damage. The `_carryState.blocking` flag tells `player.js` to render the blocking pose. Serialized via `pd.blocking` in host-sync.

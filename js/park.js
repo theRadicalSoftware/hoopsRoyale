@@ -14,14 +14,16 @@ export function createPark(scene) {
     const parkSeats = [];
 
     createFencing(parkGroup, parkColliders);
-    createTrees(parkGroup);
+    createTrees(parkGroup, parkColliders);
     createBenches(parkGroup, parkColliders, parkSeats);
     createTrashCans(parkGroup, parkColliders);
-    createLampPosts(parkGroup);
+    createLampPosts(parkGroup, parkColliders);
     createPathways(parkGroup);
-    createPerimeterPlantingBeds(parkGroup);
+    createPerimeterPlantingBeds(parkGroup, parkColliders);
     createBleachers(parkGroup, parkColliders, parkSeats);
     createDrinkingFountain(parkGroup);
+    createPavilion(parkGroup, parkColliders);
+    createPond(parkGroup, parkColliders);
     createScatteredDetails(parkGroup);
 
     scene.userData.parkColliders = parkColliders;
@@ -346,7 +348,7 @@ function createChainLinkTexture() {
 }
 
 // ─── Trees ──────────────────────────────────────────────────
-function createTrees(group) {
+function createTrees(group, colliders) {
     const treePositions = [
         // Immediate park perimeter (outside fence)
         [-18, 15], [-22, 5], [-20, -8], [-16, -18],
@@ -385,6 +387,14 @@ function createTrees(group) {
             createOakTree(group, x, z, scale, palette);
         } else {
             createPineTree(group, x, z, scale, palette);
+        }
+
+        // Add trunk collider for nearby trees (skip distant skyline trees)
+        const distSq = x * x + z * z;
+        if (distSq < 48 * 48) {
+            const trunkRadius = (treeTypeRoll < 0.45 ? 0.18 : treeTypeRoll < 0.8 ? 0.23 : 0.14) * scale;
+            const trunkH = (treeTypeRoll < 0.45 ? 3.2 : treeTypeRoll < 0.8 ? 3.8 : 2.2) * scale;
+            colliders.push({ type: 'cylinder', x, z, radius: Math.max(trunkRadius, 0.15), yMin: 0, yMax: trunkH });
         }
     }
 }
@@ -765,7 +775,7 @@ function createTrashCans(group, colliders) {
 }
 
 // ─── Lamp Posts ─────────────────────────────────────────────
-function createLampPosts(group) {
+function createLampPosts(group, colliders) {
     // Positions just outside the fence (halfW ~12.12)
     const positions = [
         { x: -13.5, z: -14, facing: 1 },
@@ -986,11 +996,14 @@ function createLampPosts(group) {
         lamp.position.set(x, 0, z);
         lamp.castShadow = true;
         group.add(lamp);
+
+        // Lamp post pole collider (base is ~0.35 radius, pole shaft is ~0.06)
+        colliders.push({ type: 'cylinder', x, z, radius: 0.3, yMin: 0, yMax: 5.5 });
     }
 }
 
 // ─── Perimeter Planting Beds (outside fence) ─────────────────
-function createPerimeterPlantingBeds(group) {
+function createPerimeterPlantingBeds(group, colliders) {
     const bedMat = new THREE.MeshStandardMaterial({
         color: 0x456739,
         roughness: 0.95,
@@ -1045,6 +1058,15 @@ function createPerimeterPlantingBeds(group) {
         mulch.scale.set(bed.rx * 0.75, bed.rz * 0.75, 1);
         mulch.receiveShadow = true;
         group.add(mulch);
+
+        // Planting bed collider — ellipse approximated as AABB
+        const bedR = Math.max(bed.rx, bed.rz) * 0.65;
+        colliders.push({
+            type: 'aabb',
+            minX: bed.x - bedR, maxX: bed.x + bedR,
+            minZ: bed.z - bedR, maxZ: bed.z + bedR,
+            yMin: 0, yMax: 1.2
+        });
 
         for (let i = 0; i < bed.shrubs; i++) {
             const n = stableNoise2D(bed.x + i * 3.7, bed.z - i * 2.9, 40.4);
@@ -1111,26 +1133,41 @@ function createPathways(group) {
 
     const pathY = -0.005;
 
-    // Main entrance path (south approach to gate)
-    addPathSegment(group, pathMat, 0, pathY, COURT_LENGTH / 2 + 6 + 13, 2.8, 28);
+    // Main entrance paths (approaches to both gates)
+    addPathSegment(group, pathMat, 0, pathY, COURT_LENGTH / 2 + 6 + 13, 2.8, 28); // south gate
+    addPathSegment(group, pathMat, 0, pathY, -(COURT_LENGTH / 2 + 6 + 13), 2.8, 28); // north gate
 
-    // Perimeter loop path around the court area
-    const loopDist = 22; // distance from center for the loop
+    // ── Primary perimeter loop (rectangular, around court) ──
+    const loopDist = 22;
     // North segment
-    addPathSegment(group, pathMat, 0, pathY, -loopDist, loopDist * 2 + 4, 2.2);
+    addPathSegment(group, pathMat, 0, pathY, -loopDist, loopDist * 2 + 4, 2.4);
     // South segment
-    addPathSegment(group, pathMat, 0, pathY, loopDist, loopDist * 2 + 4, 2.2);
+    addPathSegment(group, pathMat, 0, pathY, loopDist, loopDist * 2 + 4, 2.4);
     // East segment
-    addPathSegment(group, pathMat, loopDist + 2, pathY, 0, 2.2, loopDist * 2);
+    addPathSegment(group, pathMat, loopDist + 2, pathY, 0, 2.4, loopDist * 2);
     // West segment
-    addPathSegment(group, pathMat, -(loopDist + 2), pathY, 0, 2.2, loopDist * 2);
+    addPathSegment(group, pathMat, -(loopDist + 2), pathY, 0, 2.4, loopDist * 2);
 
-    // Diagonal paths from corners to the court area
+    // ── Outer ring path (connects to features and sidewalks) ──
+    const outerDist = 38;
+    addPathSegment(group, pathMat, 0, pathY, -outerDist, outerDist * 2 + 4, 2.0);
+    addPathSegment(group, pathMat, 0, pathY, outerDist, outerDist * 2 + 4, 2.0);
+    addPathSegment(group, pathMat, outerDist + 2, pathY, 0, 2.0, outerDist * 2);
+    addPathSegment(group, pathMat, -(outerDist + 2), pathY, 0, 2.0, outerDist * 2);
+
+    // ── Spokes connecting inner loop to outer ring (8 directions) ──
+    // Cardinal spokes
+    addPathSegment(group, pathMat, 0, pathY, -(loopDist + 8), 2.0, 16);     // north
+    addPathSegment(group, pathMat, 0, pathY, loopDist + 8, 2.0, 16);        // south
+    addPathSegment(group, pathMat, loopDist + 10, pathY, 0, 2.0, 16);       // east
+    addPathSegment(group, pathMat, -(loopDist + 10), pathY, 0, 2.0, 16);    // west
+
+    // Diagonal paths connecting inner loop corners to outer ring
     const diagPaths = [
-        { x: 30, z: 30, angle: -Math.PI / 4, len: 16 },
-        { x: -30, z: 30, angle: Math.PI / 4, len: 16 },
-        { x: 30, z: -30, angle: Math.PI / 4, len: 16 },
-        { x: -30, z: -30, angle: -Math.PI / 4, len: 16 },
+        { x: 30, z: 30, angle: -Math.PI / 4, len: 18 },
+        { x: -30, z: 30, angle: Math.PI / 4, len: 18 },
+        { x: 30, z: -30, angle: Math.PI / 4, len: 18 },
+        { x: -30, z: -30, angle: -Math.PI / 4, len: 18 },
     ];
     for (const dp of diagPaths) {
         const diag = new THREE.Mesh(
@@ -1144,10 +1181,20 @@ function createPathways(group) {
         group.add(diag);
     }
 
-    // Connector paths from loop to sidewalks (4 cardinal exits)
-    addPathSegment(group, pathMat, 0, pathY, -(loopDist + 18), 2.5, 15);  // north exit
-    addPathSegment(group, pathMat, loopDist + 18, pathY, 0, 2.5, 15);     // east exit  (rotated via w/l)
-    addPathSegment(group, pathMat, -(loopDist + 18), pathY, 0, 2.5, 15);  // west exit
+    // ── Feature connector paths ──
+    // Path from outer ring to pavilion (northwest, at -32, -30)
+    addPathSegment(group, pathMat, -32, pathY, -34, 2.0, 8);    // spur heading to pavilion
+    addPathSegment(group, pathMat, -37, pathY, -30, 2.0, 10);   // west approach
+
+    // Path from outer ring to pond (southeast, at 30, 30)
+    addPathSegment(group, pathMat, 30, pathY, 34, 2.0, 8);      // spur heading to pond area
+    addPathSegment(group, pathMat, 35, pathY, 30, 2.0, 10);     // east approach
+
+    // ── Sidewalk connectors (outer ring to sidewalks, 4 cardinal exits) ──
+    addPathSegment(group, pathMat, 0, pathY, -(outerDist + 10), 2.5, 14);   // north exit
+    addPathSegment(group, pathMat, 0, pathY, outerDist + 10, 2.5, 14);      // south exit
+    addPathSegment(group, pathMat, outerDist + 10, pathY, 0, 2.5, 14);      // east exit
+    addPathSegment(group, pathMat, -(outerDist + 10), pathY, 0, 2.5, 14);   // west exit
 }
 
 function addPathSegment(group, mat, x, y, z, width, length) {
@@ -1302,6 +1349,337 @@ function createDrinkingFountain(group) {
 
     fountain.position.set(COURT_WIDTH / 2 + 6, 0, -5);
     group.add(fountain);
+}
+
+// ─── Park Pavilion ────────────────────────────────────────────
+// Open-air shelter with stone columns, wooden roof, and seating area.
+// Positioned in the northwest quadrant between the path loop and sidewalks.
+function createPavilion(group, colliders) {
+    const pavGroup = new THREE.Group();
+    const cx = -32, cz = -30; // pavilion center
+
+    // Shared materials
+    const stoneMat = new THREE.MeshStandardMaterial({
+        color: 0x8a8278, roughness: 0.85, metalness: 0.05
+    });
+    const woodMat = new THREE.MeshStandardMaterial({
+        color: 0x6b4a2e, roughness: 0.82, metalness: 0.02
+    });
+    const roofMat = new THREE.MeshStandardMaterial({
+        color: 0x5a3d22, roughness: 0.78, metalness: 0.04
+    });
+    const metalTrimMat = new THREE.MeshStandardMaterial({
+        color: 0x444444, roughness: 0.35, metalness: 0.8
+    });
+
+    // ── Stone foundation (octagonal raised platform) ──
+    const platformRadius = 4.8;
+    const platformHeight = 0.18;
+    const platformGeo = new THREE.CylinderGeometry(platformRadius, platformRadius + 0.15, platformHeight, 8);
+    const platform = new THREE.Mesh(platformGeo, stoneMat);
+    platform.position.set(cx, platformHeight / 2, cz);
+    platform.receiveShadow = true;
+    platform.castShadow = true;
+    pavGroup.add(platform);
+
+    // Platform edge trim
+    const edgeGeo = new THREE.TorusGeometry(platformRadius + 0.05, 0.06, 6, 8);
+    const edge = new THREE.Mesh(edgeGeo, metalTrimMat);
+    edge.rotation.x = Math.PI / 2;
+    edge.position.set(cx, platformHeight, cz);
+    pavGroup.add(edge);
+
+    // ── Columns (8 stone pillars around the perimeter) ──
+    const columnCount = 8;
+    const columnRadius = 0.18;
+    const columnHeight = 3.2;
+    const columnRing = platformRadius - 0.5;
+    const colGeo = new THREE.CylinderGeometry(columnRadius, columnRadius + 0.04, columnHeight, 10);
+    const capGeo = new THREE.CylinderGeometry(columnRadius + 0.12, columnRadius + 0.04, 0.12, 10);
+    const baseGeo = new THREE.CylinderGeometry(columnRadius + 0.06, columnRadius + 0.14, 0.2, 10);
+
+    for (let i = 0; i < columnCount; i++) {
+        const angle = (i / columnCount) * Math.PI * 2;
+        const px = cx + Math.cos(angle) * columnRing;
+        const pz = cz + Math.sin(angle) * columnRing;
+
+        // Column shaft
+        const col = new THREE.Mesh(colGeo, stoneMat);
+        col.position.set(px, platformHeight + columnHeight / 2, pz);
+        col.castShadow = true;
+        pavGroup.add(col);
+
+        // Column capital (top)
+        const cap = new THREE.Mesh(capGeo, stoneMat);
+        cap.position.set(px, platformHeight + columnHeight + 0.06, pz);
+        pavGroup.add(cap);
+
+        // Column base
+        const base = new THREE.Mesh(baseGeo, stoneMat);
+        base.position.set(px, platformHeight + 0.1, pz);
+        pavGroup.add(base);
+
+        // Column collider
+        colliders.push({
+            type: 'cylinder', x: px, z: pz,
+            radius: columnRadius + 0.1, yMin: 0, yMax: columnHeight + 0.3
+        });
+    }
+
+    // ── Roof (conical/octagonal peaked roof with overhang) ──
+    const roofBaseY = platformHeight + columnHeight;
+    const roofRadius = platformRadius + 0.8; // overhang past columns
+    const roofPeakHeight = 2.2;
+
+    // Main roof cone
+    const roofGeo = new THREE.ConeGeometry(roofRadius, roofPeakHeight, 8);
+    const roof = new THREE.Mesh(roofGeo, roofMat);
+    roof.position.set(cx, roofBaseY + roofPeakHeight / 2, cz);
+    roof.castShadow = true;
+    roof.receiveShadow = true;
+    pavGroup.add(roof);
+
+    // Roof underside (flat disc so it doesn't look hollow from below)
+    const roofUnderGeo = new THREE.CircleGeometry(roofRadius - 0.1, 8);
+    const roofUnder = new THREE.Mesh(roofUnderGeo, woodMat);
+    roofUnder.rotation.x = Math.PI / 2;
+    roofUnder.position.set(cx, roofBaseY + 0.02, cz);
+    pavGroup.add(roofUnder);
+
+    // Roof trim ring
+    const roofTrimGeo = new THREE.TorusGeometry(roofRadius - 0.05, 0.08, 6, 8);
+    const roofTrim = new THREE.Mesh(roofTrimGeo, metalTrimMat);
+    roofTrim.rotation.x = Math.PI / 2;
+    roofTrim.position.set(cx, roofBaseY + 0.05, cz);
+    pavGroup.add(roofTrim);
+
+    // Roof peak finial
+    const finialGeo = new THREE.SphereGeometry(0.12, 8, 6);
+    const finial = new THREE.Mesh(finialGeo, metalTrimMat);
+    finial.position.set(cx, roofBaseY + roofPeakHeight + 0.12, cz);
+    pavGroup.add(finial);
+
+    // ── Crossbeams connecting columns to center (visible under roof) ──
+    const beamGeo = new THREE.BoxGeometry(0.12, 0.14, columnRing);
+    for (let i = 0; i < columnCount; i++) {
+        const angle = (i / columnCount) * Math.PI * 2;
+        const beam = new THREE.Mesh(beamGeo, woodMat);
+        beam.position.set(
+            cx + Math.cos(angle) * (columnRing / 2),
+            roofBaseY - 0.1,
+            cz + Math.sin(angle) * (columnRing / 2)
+        );
+        beam.rotation.y = -angle + Math.PI / 2;
+        beam.castShadow = true;
+        pavGroup.add(beam);
+    }
+
+    // ── Built-in bench ring (hexagonal inner seating) ──
+    const benchRing = 2.8;
+    const benchCount = 6;
+    const benchSeatGeo = new THREE.BoxGeometry(2.2, 0.08, 0.55);
+    const benchLegGeo = new THREE.BoxGeometry(0.08, 0.38, 0.08);
+
+    for (let i = 0; i < benchCount; i++) {
+        const angle = (i / benchCount) * Math.PI * 2 + Math.PI / 6;
+        const bx = cx + Math.cos(angle) * benchRing;
+        const bz = cz + Math.sin(angle) * benchRing;
+
+        // Seat
+        const seat = new THREE.Mesh(benchSeatGeo, woodMat);
+        seat.position.set(bx, platformHeight + 0.42, bz);
+        seat.rotation.y = -angle;
+        seat.castShadow = true;
+        seat.receiveShadow = true;
+        pavGroup.add(seat);
+
+        // Two legs
+        for (const side of [-0.85, 0.85]) {
+            const leg = new THREE.Mesh(benchLegGeo, metalTrimMat);
+            const lx = bx + Math.cos(angle + Math.PI / 2) * side * 0.3;
+            const lz = bz + Math.sin(angle + Math.PI / 2) * side * 0.3;
+            leg.position.set(lx, platformHeight + 0.19, lz);
+            pavGroup.add(leg);
+        }
+    }
+
+    group.add(pavGroup);
+}
+
+// ─── Park Pond ──────────────────────────────────────────────
+// Small decorative pond with rocks, reeds, and a lily pad cluster.
+// Positioned in the southeast quadrant.
+function createPond(group, colliders) {
+    const pondGroup = new THREE.Group();
+    const cx = 30, cz = 30; // pond center
+
+    // Materials
+    const waterMat = new THREE.MeshStandardMaterial({
+        color: 0x2a5a5a,
+        roughness: 0.15,
+        metalness: 0.3,
+        transparent: true,
+        opacity: 0.78
+    });
+    const rockMat = new THREE.MeshStandardMaterial({
+        color: 0x6a6a62, roughness: 0.92, metalness: 0.05
+    });
+    const darkRockMat = new THREE.MeshStandardMaterial({
+        color: 0x4a4a42, roughness: 0.95, metalness: 0.04
+    });
+    const reedMat = new THREE.MeshStandardMaterial({
+        color: 0x4a6a32, roughness: 0.85, metalness: 0.0
+    });
+    const lilyPadMat = new THREE.MeshStandardMaterial({
+        color: 0x2d6b30, roughness: 0.7, metalness: 0.02, side: THREE.DoubleSide
+    });
+    const lilyFlowerMat = new THREE.MeshStandardMaterial({
+        color: 0xf0c0d0, roughness: 0.6
+    });
+    const mudMat = new THREE.MeshStandardMaterial({
+        color: 0x4a3d2a, roughness: 0.95, metalness: 0.0
+    });
+
+    // ── Pond basin (elliptical depression) ──
+    const pondRadiusX = 4.5;
+    const pondRadiusZ = 3.5;
+    const pondDepth = 0.12;
+
+    // Mud/earth ring around pond edge
+    const mudRingGeo = new THREE.CircleGeometry(1, 24);
+    const mudRing = new THREE.Mesh(mudRingGeo, mudMat);
+    mudRing.rotation.x = -Math.PI / 2;
+    mudRing.position.set(cx, -0.008, cz);
+    mudRing.scale.set(pondRadiusX + 0.8, pondRadiusZ + 0.8, 1);
+    mudRing.receiveShadow = true;
+    pondGroup.add(mudRing);
+
+    // Water surface
+    const waterGeo = new THREE.CircleGeometry(1, 24);
+    const water = new THREE.Mesh(waterGeo, waterMat);
+    water.rotation.x = -Math.PI / 2;
+    water.position.set(cx, -pondDepth + 0.01, cz);
+    water.scale.set(pondRadiusX, pondRadiusZ, 1);
+    water.receiveShadow = true;
+    pondGroup.add(water);
+
+    // ── Rock border (irregular stones around the edge) ──
+    const rockGeo = new THREE.DodecahedronGeometry(1, 0);
+    const rockCount = 22;
+    for (let i = 0; i < rockCount; i++) {
+        const angle = (i / rockCount) * Math.PI * 2 + stableNoise2D(i, cx, 5.3) * 0.3;
+        const edgeDist = 0.92 + stableNoise2D(i, cz, 8.7) * 0.15;
+        const rx = cx + Math.cos(angle) * pondRadiusX * edgeDist;
+        const rz = cz + Math.sin(angle) * pondRadiusZ * edgeDist;
+        const scale = 0.18 + stableNoise2D(i, i * 3, 12.1) * 0.28;
+
+        const rock = new THREE.Mesh(rockGeo, stableNoise2D(i, 0, 99) > 0.5 ? rockMat : darkRockMat);
+        rock.scale.set(scale, scale * 0.6, scale * 0.9);
+        rock.position.set(rx, scale * 0.15, rz);
+        rock.rotation.set(
+            stableNoise2D(i, 1, 20) * 0.5,
+            stableNoise2D(i, 2, 20) * Math.PI,
+            stableNoise2D(i, 3, 20) * 0.3
+        );
+        rock.castShadow = true;
+        rock.receiveShadow = true;
+        pondGroup.add(rock);
+    }
+
+    // A few larger accent rocks
+    const accentRocks = [
+        { x: cx - 3.8, z: cz - 2.5, s: 0.55 },
+        { x: cx + 4.0, z: cz + 1.5, s: 0.48 },
+        { x: cx - 1.5, z: cz + 3.2, s: 0.42 },
+    ];
+    for (const ar of accentRocks) {
+        const rock = new THREE.Mesh(rockGeo, darkRockMat);
+        rock.scale.set(ar.s, ar.s * 0.55, ar.s * 0.8);
+        rock.position.set(ar.x, ar.s * 0.18, ar.z);
+        rock.rotation.y = stableNoise2D(ar.x, ar.z, 7) * Math.PI;
+        rock.castShadow = true;
+        pondGroup.add(rock);
+    }
+
+    // ── Reeds / cattails around edges ──
+    const reedGeo = new THREE.CylinderGeometry(0.02, 0.025, 1, 4);
+    const cattailGeo = new THREE.CylinderGeometry(0.04, 0.035, 0.18, 5);
+    const cattailMat = new THREE.MeshStandardMaterial({ color: 0x5a4020, roughness: 0.9 });
+
+    const reedClusters = [
+        { x: cx - 3.5, z: cz - 2.8, count: 6 },
+        { x: cx + 3.8, z: cz + 2.2, count: 5 },
+        { x: cx - 2.0, z: cz + 3.0, count: 4 },
+        { x: cx + 1.5, z: cz - 3.2, count: 5 },
+    ];
+    for (const cluster of reedClusters) {
+        for (let i = 0; i < cluster.count; i++) {
+            const reedHeight = 0.6 + stableNoise2D(cluster.x + i, cluster.z, 15) * 0.6;
+            const ox = (stableNoise2D(i, cluster.x, 22) - 0.5) * 1.2;
+            const oz = (stableNoise2D(i, cluster.z, 33) - 0.5) * 1.0;
+
+            const reed = new THREE.Mesh(reedGeo, reedMat);
+            reed.scale.y = reedHeight;
+            reed.position.set(cluster.x + ox, reedHeight * 0.5 - 0.05, cluster.z + oz);
+            reed.rotation.x = (stableNoise2D(i, 0, 44) - 0.5) * 0.15;
+            reed.rotation.z = (stableNoise2D(i, 1, 44) - 0.5) * 0.15;
+            reed.userData.isLeaves = true;
+            reed.userData.leafSway = 0.15 + stableNoise2D(i, 2, 44) * 0.2;
+            pondGroup.add(reed);
+
+            // Cattail top on taller reeds
+            if (reedHeight > 0.9) {
+                const cattail = new THREE.Mesh(cattailGeo, cattailMat);
+                cattail.position.set(cluster.x + ox, reedHeight - 0.02, cluster.z + oz);
+                pondGroup.add(cattail);
+            }
+        }
+    }
+
+    // ── Lily pads on the water surface ──
+    const lilyGeo = new THREE.CircleGeometry(0.25, 8);
+    const lilyFlowerGeo = new THREE.SphereGeometry(0.06, 6, 4);
+    const lilyPads = [
+        { x: cx - 1.2, z: cz + 0.8 },
+        { x: cx + 0.8, z: cz - 0.5 },
+        { x: cx - 0.3, z: cz - 1.5 },
+        { x: cx + 1.8, z: cz + 1.2 },
+        { x: cx - 2.0, z: cz - 0.2 },
+        { x: cx + 0.2, z: cz + 1.8 },
+    ];
+    for (let i = 0; i < lilyPads.length; i++) {
+        const lp = lilyPads[i];
+        const pad = new THREE.Mesh(lilyGeo, lilyPadMat);
+        pad.rotation.x = -Math.PI / 2;
+        pad.rotation.z = stableNoise2D(i, 55, 10) * Math.PI;
+        pad.scale.setScalar(0.7 + stableNoise2D(i, 66, 10) * 0.6);
+        pad.position.set(lp.x, -pondDepth + 0.02, lp.z);
+        pondGroup.add(pad);
+
+        // Flower on some pads
+        if (i % 3 === 0) {
+            const flower = new THREE.Mesh(lilyFlowerGeo, lilyFlowerMat);
+            flower.position.set(lp.x + 0.1, -pondDepth + 0.08, lp.z + 0.05);
+            pondGroup.add(flower);
+        }
+    }
+
+    // ── Pond collider (prevent walking into water) ──
+    // Approximate with two overlapping AABBs for the ellipse
+    colliders.push({
+        type: 'aabb',
+        minX: cx - pondRadiusX * 0.85, maxX: cx + pondRadiusX * 0.85,
+        minZ: cz - pondRadiusZ, maxZ: cz + pondRadiusZ,
+        yMin: -0.3, yMax: 0.3
+    });
+    colliders.push({
+        type: 'aabb',
+        minX: cx - pondRadiusX, maxX: cx + pondRadiusX,
+        minZ: cz - pondRadiusZ * 0.75, maxZ: cz + pondRadiusZ * 0.75,
+        yMin: -0.3, yMax: 0.3
+    });
+
+    group.add(pondGroup);
 }
 
 // ─── Scattered Details (leaves, pebbles, etc.) ─────────────
