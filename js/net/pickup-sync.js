@@ -20,6 +20,7 @@ const currentPos = { x: 0, z: 0, a: 0 };
 
 // Callbacks
 let onWorldState = null; // (msg) => void
+let onGameState = null;  // (msg) => void  — spectator feed from active court game
 
 // ─── Init / Teardown ───────────────────────────────────────
 
@@ -32,10 +33,12 @@ let onWorldState = null; // (msg) => void
 export function startPickupSync(opts) {
     mySessionId = opts.mySessionId;
     onWorldState = opts.onWorldState || null;
+    onGameState = opts.onGameState || null;
     active = true;
     myTeam = null;
 
     connection.on(MSG.PICKUP_WORLD_STATE, handleWorldState);
+    connection.on(MSG.PICKUP_GAME_STATE, handleGameState);
     positionTimer = setInterval(sendPosition, POSITION_RATE);
 }
 
@@ -47,17 +50,24 @@ export function stopPickupSync() {
         positionTimer = null;
     }
     connection.off(MSG.PICKUP_WORLD_STATE, handleWorldState);
+    connection.off(MSG.PICKUP_GAME_STATE, handleGameState);
 }
 
 // ─── Position Broadcasting ─────────────────────────────────
 
 /**
- * Set current local position (called by main.js each frame).
+ * Set current local state (called by main.js each frame).
  */
-export function setPosition(x, z, angle) {
+export function setPosition(x, z, angle, y, moveBlend, walkCycle, grounded, jumping, seated) {
     currentPos.x = x;
     currentPos.z = z;
     currentPos.a = angle;
+    currentPos.y = y;
+    currentPos.mb = moveBlend;
+    currentPos.wc = walkCycle;
+    currentPos.g = grounded;
+    currentPos.j = jumping;
+    currentPos.s = seated;
 }
 
 function sendPosition() {
@@ -66,7 +76,13 @@ function sendPosition() {
         type: MSG.PICKUP_POSITION,
         x: Math.round(currentPos.x * 100) / 100,
         z: Math.round(currentPos.z * 100) / 100,
-        a: Math.round(currentPos.a * 100) / 100
+        a: Math.round(currentPos.a * 100) / 100,
+        y: Math.round(currentPos.y * 1000) / 1000,
+        mb: Math.round(currentPos.mb * 100) / 100,
+        wc: Math.round(currentPos.wc * 100) / 100,
+        g: currentPos.g ? 1 : 0,
+        j: currentPos.j ? 1 : 0,
+        s: currentPos.s ? 1 : 0
     });
 }
 
@@ -75,6 +91,11 @@ function sendPosition() {
 function handleWorldState(msg) {
     if (!active) return;
     if (onWorldState) onWorldState(msg);
+}
+
+function handleGameState(msg) {
+    if (!active) return;
+    if (onGameState) onGameState(msg);
 }
 
 // ─── Zone Enter / Leave ────────────────────────────────────

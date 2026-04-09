@@ -373,6 +373,8 @@ export function createPlayer(scene, options = {}) {
         idleClock: 0,
         facingAngle: spawnAngle,
         jerseyColor,
+        _jerseyMat: jerseyMat,
+        _headbandMat: headbandMat,
         isTeammate: !!options.isTeammate,
         velocity: new THREE.Vector3(),
         velocityY: 0,
@@ -529,9 +531,9 @@ export function updatePlayer(pd, delta, input, movementBasis = null, colliders =
 
         resolvePlayerCollisions(pd, colliders);
     } else {
-        // skipPhysics: derive isMoving from current velocity for animation
-        const horizontalSpeed = Math.hypot(pd.velocity.x, pd.velocity.z);
-        isMoving = horizontalSpeed > 0.08;
+        // skipPhysics: derive isMoving from moveBlend (set by network sync)
+        // or fall back to velocity if available
+        isMoving = pd.moveBlend > 0.1 || Math.hypot(pd.velocity.x, pd.velocity.z) > 0.08;
         group.rotation.y = pd.facingAngle;
     }
 
@@ -790,11 +792,14 @@ function animateLimbs(pd, isMoving, delta, carryState = null) {
     const lerp18 = 1 - Math.exp(-18 * delta);
     const lerp6  = 1 - Math.exp(-6 * delta);
 
-    const moveBlendTarget = isMoving && pd.isGrounded ? 1 : 0;
-    const moveBlendLerp = moveBlendTarget > pd.moveBlend
-        ? (1 - Math.exp(-MOVE_BLEND_IN_SPEED * delta))
-        : (1 - Math.exp(-MOVE_BLEND_OUT_SPEED * delta));
-    pd.moveBlend += (moveBlendTarget - pd.moveBlend) * moveBlendLerp;
+    // For network-synced players, moveBlend/walkCycle are set externally — skip local override
+    if (!pd._networkSynced) {
+        const moveBlendTarget = isMoving && pd.isGrounded ? 1 : 0;
+        const moveBlendLerp = moveBlendTarget > pd.moveBlend
+            ? (1 - Math.exp(-MOVE_BLEND_IN_SPEED * delta))
+            : (1 - Math.exp(-MOVE_BLEND_OUT_SPEED * delta));
+        pd.moveBlend += (moveBlendTarget - pd.moveBlend) * moveBlendLerp;
+    }
 
     const seated = !!carryState?.seated;
     if (seated) {

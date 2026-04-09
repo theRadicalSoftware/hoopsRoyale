@@ -34,6 +34,8 @@ export const PICKUP_POSITION     = 'PICKUP_POSITION';
 export const PICKUP_WORLD_STATE  = 'PICKUP_WORLD_STATE';
 export const PICKUP_ZONE_ENTER   = 'PICKUP_ZONE_ENTER';
 export const PICKUP_ZONE_LEAVE   = 'PICKUP_ZONE_LEAVE';
+export const PICKUP_GAME_STATE   = 'PICKUP_GAME_STATE';
+export const PICKUP_CHAT         = 'PICKUP_CHAT';
 
 // Connection
 export const PING            = 'PING';

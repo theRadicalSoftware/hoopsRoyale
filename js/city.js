@@ -63,13 +63,16 @@ const ROOF_UNIT_GEO = new THREE.BoxGeometry(1.8, 1.2, 1.6);
 export function createCity(scene) {
     const cityGroup = new THREE.Group();
     cityGroup.name = 'city';
+    const cityColliders = [];
 
     createSidewalks(cityGroup);
     createStreets(cityGroup);
-    createCityBlocks(cityGroup);
+    createCityGroundPlane(cityGroup);
+    createCityBlocks(cityGroup, cityColliders);
     createStreetProps(cityGroup);
     createParkedCars(cityGroup);
 
+    scene.userData.cityColliders = cityColliders;
     scene.add(cityGroup);
     return cityGroup;
 }
@@ -418,8 +421,100 @@ function createSidewalkPlanters(group) {
     }
 }
 
+// ─── City Ground Plane ─────────────────────────────────────
+// Pavement/sidewalk surface beneath buildings so the city area
+// looks like actual city ground instead of grass.
+function createCityGroundPlane(group) {
+    // Reuse sidewalk-style concrete texture
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#a8a090';
+    ctx.fillRect(0, 0, 256, 256);
+    // Concrete slab grid
+    ctx.strokeStyle = '#908878';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i <= 4; i++) {
+        ctx.beginPath();
+        ctx.moveTo(0, i * 64);
+        ctx.lineTo(256, i * 64);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(i * 64, 0);
+        ctx.lineTo(i * 64, 256);
+        ctx.stroke();
+    }
+    // Wear marks and grime
+    for (let i = 0; i < 2000; i++) {
+        ctx.fillStyle = `rgba(${90 + Math.random() * 40}, ${85 + Math.random() * 40}, ${75 + Math.random() * 35}, 0.07)`;
+        ctx.fillRect(Math.random() * 256, Math.random() * 256, 1 + Math.random() * 2, 1 + Math.random() * 2);
+    }
+    // Oil stains
+    for (let i = 0; i < 8; i++) {
+        ctx.fillStyle = `rgba(40, 38, 35, 0.12)`;
+        ctx.beginPath();
+        ctx.arc(Math.random() * 256, Math.random() * 256, 4 + Math.random() * 10, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(20, 20);
+
+    const groundMat = new THREE.MeshStandardMaterial({
+        map: tex,
+        roughness: 0.88,
+        metalness: 0.03,
+        color: 0xb0a898
+    });
+
+    const cityStart = 62;
+    const cityDepth = 52;
+    const groundY = -0.015;
+
+    // Four ground planes beneath each building district
+    const planes = [
+        // [x, z, width, depth]
+        [0, cityStart + cityDepth / 2, cityStart * 2 + cityDepth * 2, cityDepth],          // north
+        [0, -(cityStart + cityDepth / 2), cityStart * 2 + cityDepth * 2, cityDepth],       // south
+        [cityStart + cityDepth / 2, 0, cityDepth, cityStart * 2],                           // east
+        [-(cityStart + cityDepth / 2), 0, cityDepth, cityStart * 2],                        // west
+    ];
+
+    for (const [x, z, w, d] of planes) {
+        const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(w, d),
+            groundMat
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.set(x, groundY, z);
+        ground.receiveShadow = true;
+        group.add(ground);
+    }
+
+    // Corner fills (where districts overlap)
+    const cornerPlanes = [
+        [cityStart + cityDepth / 2, cityStart + cityDepth / 2],
+        [-(cityStart + cityDepth / 2), cityStart + cityDepth / 2],
+        [cityStart + cityDepth / 2, -(cityStart + cityDepth / 2)],
+        [-(cityStart + cityDepth / 2), -(cityStart + cityDepth / 2)],
+    ];
+    for (const [x, z] of cornerPlanes) {
+        const corner = new THREE.Mesh(
+            new THREE.PlaneGeometry(cityDepth, cityDepth),
+            groundMat
+        );
+        corner.rotation.x = -Math.PI / 2;
+        corner.position.set(x, groundY, z);
+        corner.receiveShadow = true;
+        group.add(corner);
+    }
+}
+
 // ─── City Blocks (buildings) ────────────────────────────────
-function createCityBlocks(group) {
+function createCityBlocks(group, colliders) {
     const buildingColors = [
         0x8b7355, 0x6b5b47, 0x997755, 0x7a6a52, // brownstone
         0x666666, 0x777777, 0x888888, 0x5a5a5a,   // concrete/modern
@@ -471,10 +566,12 @@ function createCityBlocks(group) {
                     jitterZ = (Math.random() - 0.5) * 2.2;
                 }
 
+                const bx = x + adjustedJitterX;
+                const bz = z + jitterZ;
                 createBuilding(
                     group,
-                    x + adjustedJitterX,
-                    z + jitterZ,
+                    bx,
+                    bz,
                     bWidth,
                     bDepth,
                     finalHeight,
@@ -482,6 +579,16 @@ function createCityBlocks(group) {
                     styleSeed,
                     dir
                 );
+                // Building collider (AABB matching footprint)
+                colliders.push({
+                    type: 'aabb',
+                    minX: bx - bWidth / 2 - 0.3,
+                    maxX: bx + bWidth / 2 + 0.3,
+                    minZ: bz - bDepth / 2 - 0.3,
+                    maxZ: bz + bDepth / 2 + 0.3,
+                    yMin: 0,
+                    yMax: finalHeight
+                });
             }
         }
     }
