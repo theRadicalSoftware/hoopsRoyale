@@ -164,7 +164,7 @@ export function tryPickUpBasketball(ball, playerData) {
     return true;
 }
 
-export function updateBasketball(ball, delta, environmentColliders, playerData = null, allPlayers = null) {
+export function updateBasketball(ball, delta, environmentColliders, playerData = null, allPlayers = null, onPlayerContact = null) {
     if (!ball || !ball.active || !ball.mesh.visible) return;
 
     if (ball.heldByPlayer) {
@@ -225,7 +225,12 @@ export function updateBasketball(ball, delta, environmentColliders, playerData =
         // Resolve collision against all players
         const players = allPlayers || (playerData ? [playerData] : []);
         for (const pd of players) {
+            const prevTouch = ball._lastTouchRef;
             resolvePlayerCollision(ball, pd);
+            // Fire callback on new contact (lastTouchRef changed → this player was touched)
+            if (onPlayerContact && ball._lastTouchRef === pd && ball._lastTouchRef !== prevTouch) {
+                onPlayerContact(ball, pd);
+            }
         }
     }
 

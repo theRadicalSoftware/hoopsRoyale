@@ -320,6 +320,11 @@ function handleCreateRoom() {
         name: name || undefined,
         isPublic,
         scoreTarget,
+        scoringMode: 'street',      // '1s and 2s' (street) or '2s and 3s' (nba)
+        makeItTakeIt: false,         // false = losers ball (default)
+        shotClockEnabled: false,
+        shotClockDuration: 12,
+        winByTwo: true,
         mode: 'custom'
     });
 }

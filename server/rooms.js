@@ -123,7 +123,13 @@ export function createRoom(sessionId, nickname, ws, options = {}) {
             isPublic: options.isPublic !== false,
             scoreTarget: [11, 15, 21].includes(options.scoreTarget) ? options.scoreTarget : 21,
             teamSize: 3,
-            mode: options.mode || 'custom'
+            mode: options.mode || 'custom',
+            // Game rules (street basketball defaults)
+            scoringMode: options.scoringMode === 'nba' ? 'nba' : 'street',
+            makeItTakeIt: !!options.makeItTakeIt,
+            winByTwo: options.winByTwo !== false,
+            shotClockEnabled: !!options.shotClockEnabled,
+            shotClockDuration: [8, 10, 12, 14, 16].includes(options.shotClockDuration) ? options.shotClockDuration : 12,
         },
         state: 'lobby',
         createdAt: Date.now()

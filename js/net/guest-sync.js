@@ -169,12 +169,15 @@ export function getLatestSnapshot() {
 }
 
 function extractState(snapshot) {
+    // gamePhase (gp) is either a string (legacy) or a rich object from serializeGamePhase()
+    const gp = snapshot.gp;
+    const gamePhase = (typeof gp === 'object' && gp !== null) ? gp : { ph: gp || 'playing' };
     return {
         tick: snapshot.t,
         players: snapshot.p || [],
         ball: snapshot.b || null,
         scores: snapshot.s || {},
-        gamePhase: snapshot.gp || 'playing'
+        gamePhase
     };
 }
 
@@ -205,12 +208,15 @@ function interpolateStates(from, to, alpha) {
         ball = interpolateBall(from.b, to.b, alpha);
     }
 
+    // Pass through the rich game phase object from the latest snapshot
+    const gp = to.gp;
+    const gamePhase = (typeof gp === 'object' && gp !== null) ? gp : { ph: gp || 'playing' };
     return {
         tick: to.t,
         players,
         ball,
         scores: to.s || {},
-        gamePhase: to.gp || 'playing'
+        gamePhase
     };
 }
 

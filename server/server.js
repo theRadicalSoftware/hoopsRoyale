@@ -192,7 +192,13 @@ wss.on('connection', (ws) => {
                 name: (msg.name || '').slice(0, 30),
                 isPublic: msg.isPublic !== false,
                 scoreTarget: msg.scoreTarget,
-                mode: msg.mode
+                mode: msg.mode,
+                // Game rules
+                scoringMode: msg.scoringMode,
+                makeItTakeIt: msg.makeItTakeIt,
+                winByTwo: msg.winByTwo,
+                shotClockEnabled: msg.shotClockEnabled,
+                shotClockDuration: msg.shotClockDuration,
             });
 
             if (!result.ok) {

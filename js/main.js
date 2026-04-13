@@ -224,7 +224,16 @@ const TM_SHOOT_WINDUP = 0.45;
 const TM_DUNK_APPROACH_DIST = 2.8;
 const TM_DUNK_CHANCE = 0.65;
 const TM_PICKUP_RADIUS = 0.65;
-const TM_PUNCH_CHANCE = 0.012;
+const TM_PUNCH_CHANCE = 0.03;             // ~1.8% per frame at 60fps — much more aggressive on-ball
+const TM_HELP_PUNCH_CHANCE = 0.016;       // off-ball defenders close to holder also throw punches
+const TM_HELP_PUNCH_RANGE = 1.8;          // distance within which help defenders will punch
+const TM_SHOOT_HOLD_OPEN = 0.2;           // shoot quickly when wide open (nearest defender > 4m)
+const TM_SHOOT_HOLD_DEFAULT = 0.5;        // normal shoot hold timer when somewhat pressured
+const TM_SHOOT_CONTESTED_HOLD = 1.2;      // will force a contested shot after this long
+const TM_DUNK_HOLD_MIN = 0.15;            // less hesitation before dunking
+const TM_WIDE_OPEN_DIST = 4.0;            // distance threshold for "wide open" status
+const TM_PASS_PLAYER_BONUS = 8.0;         // bonus for passing to the human player when open near rim
+const TM_PASS_SCORING_POS_BONUS = 5.0;    // bonus for targets in prime scoring position
 const TEAM_AI_BASE_SPEED = 0.82;
 
 // ─── Opponent System ─────────────────────────────────────
@@ -319,6 +328,52 @@ let oppShotsAttempted = 0;
 let scoreCooldown = 0;
 let pendingMake = null; // { rim, elapsed }
 let scorePrevBallValid = false;
+
+// ─── Game Rules / Street Basketball Settings ────────────────
+const GAME_RULES_DEFAULT = {
+    scoreTarget: 11,        // first to this many points wins
+    winByTwo: true,         // must lead by 2 to win
+    scoringMode: 'street',  // 'street' = 1s and 2s, 'nba' = 2s and 3s
+    makeItTakeIt: false,    // false = losers ball (scored-on team gets ball)
+    shotClockEnabled: false,
+    shotClockDuration: 12,  // seconds
+};
+let gameRules = { ...GAME_RULES_DEFAULT };
+
+// ─── Possession / Check-Ball System ─────────────────────────
+const HOME_RIM_Z = -12.726;
+const AWAY_RIM_Z = 12.726;
+const CHECK_SPOT_OFFSET_Z = 5.49;     // Z from center (top of 3pt arc from rim)
+const CHECK_CELEBRATION_SECS = 1.4;
+const CHECK_OOB_PAUSE_SECS = 0.6;
+const CHECK_REPOSITION_TIMEOUT = 5.0;
+const CHECK_AI_DELAY = 0.5;
+const CHECK_PASS_DURATION = 0.30;
+const CHECK_LIVE_DELAY = 0.18;
+const CHECK_HANDLER_ARRIVE = 0.8;
+const CHECK_CHECKER_OFFSET = 1.5;
+const CHECK_ARRIVE_THRESHOLD = 0.7;
+const CHECK_WALK_SPEED = 3.2;
+let checkBallState = null;
+
+// ─── Clear-the-Ball ─────────────────────────────────────────
+let clearBallRequired = false;
+let clearBallTeam = null;
+let lastPossessionTeam = null;
+
+// ─── Shot Clock ─────────────────────────────────────────────
+let shotClockTimer = 0;
+let shotClockActive = false;
+
+// ─── Hot Streak ─────────────────────────────────────────────
+const HOT_STREAK_THRESHOLD = 3;
+let homeConsecutive = 0;
+let awayConsecutive = 0;
+let hotStreakTeam = null;
+let hotStreakEffects = [];
+
+// ─── Game Over ──────────────────────────────────────────────
+let gameOverState = null;
 
 // ─── Shooting Arc Visualization ─────────────────────────────
 // Ball-physics constants mirrored from ball.js for trajectory prediction
@@ -460,6 +515,14 @@ const sbHomeDetail = document.getElementById('sb-home-detail');
 const sbAwayScore = document.getElementById('sb-away-score');
 const sbAwayDetail = document.getElementById('sb-away-detail');
 const controlsBar = document.getElementById('controls-bar');
+const shotClockEl = document.getElementById('shot-clock');
+const shotClockValueEl = document.getElementById('shot-clock-value');
+const streakHud = document.getElementById('streak-hud');
+const gameOverOverlay = document.getElementById('game-over-overlay');
+const gameOverTitle = document.getElementById('game-over-title');
+const gameOverScore = document.getElementById('game-over-score');
+const gameOverStats = document.getElementById('game-over-stats');
+const sbTarget = document.getElementById('sb-target');
 let _prevStaminaFrac = -1;
 let shotFeedbackHideTimeout = null;
 
@@ -484,6 +547,7 @@ function setGameplayHudVisible(visible) {
             soloScoreboard.classList.remove('sb-corner');
             soloScoreboard.style.display = visible ? 'flex' : 'none';
         }
+        if (sbTarget) sbTarget.style.display = visible ? 'block' : 'none';
         if (controlsBar) controlsBar.style.opacity = visible ? '1' : '0';
     } else if (isFree) {
         // Free play: scoreboard in upper-left corner, title below it in red, no stamina card
@@ -498,13 +562,21 @@ function setGameplayHudVisible(visible) {
             soloScoreboard.classList.add('sb-corner');
             soloScoreboard.style.display = visible ? 'flex' : 'none';
         }
+        if (sbTarget) sbTarget.style.display = 'none'; // no target in free play
         if (controlsBar) controlsBar.style.opacity = '0';
     } else {
-        uiButtons?.classList[method]('hud-hidden');
-        controlsHint?.classList[method]('hud-hidden');
-        scoreHud?.classList[method]('hud-hidden');
-        oppScoreHud?.classList[method]('hud-hidden');
+        // Online mode: centered scoreboard like solo, no debug buttons
+        uiButtons?.classList.add('hud-hidden');
+        scoreHud?.classList.add('hud-hidden');
+        oppScoreHud?.classList.add('hud-hidden');
+        controlsHint?.classList.add('hud-hidden');
         uiOverlay?.classList.remove('title-under-sb');
+        if (soloScoreboard) {
+            soloScoreboard.classList.remove('sb-corner');
+            soloScoreboard.style.display = visible ? 'flex' : 'none';
+        }
+        if (sbTarget) sbTarget.style.display = visible ? 'block' : 'none';
+        if (controlsBar) controlsBar.style.opacity = visible ? '1' : '0';
     }
 
     if (!visible && shotFeedback) {
@@ -552,6 +624,12 @@ function showModeSelect() {
     blockHeld = false;
     tipOffState = null;
     inboundState = null;
+    checkBallState = null;
+    gameOverState = null;
+    clearBallRequired = false;
+    clearBallTeam = null;
+    shotClockActive = false;
+    hotStreakTeam = null;
     if (refereeData?.group) refereeData.group.visible = false;
     if (isPointerLocked) document.exitPointerLock();
     controls.enabled = false;
@@ -564,6 +642,12 @@ function showModeSelect() {
     uiOverlay?.classList.remove('title-under-sb');
     if (controlsBar) controlsBar.style.opacity = '0';
     if (countdownOverlay) countdownOverlay.style.display = 'none';
+    if (gameOverOverlay) {
+        gameOverOverlay.style.display = 'none';
+        gameOverOverlay.classList.remove('show');
+    }
+    if (shotClockEl) shotClockEl.style.display = 'none';
+    if (streakHud) streakHud.classList.remove('active');
 
     if (modeSelect) {
         modeSelect.style.display = 'flex';
@@ -1184,6 +1268,611 @@ function isInboundActive() {
     return !!inboundState;
 }
 
+// ═══════════════════════════════════════════════════════════
+// ─── Check-Ball / Dead-Ball System ─────────────────────────
+// After a made basket (or OOB redirect in street mode), the
+// game pauses briefly and then runs the street-style check-ball
+// ceremony: ball handler walks to top of arc, passes to nearest
+// defender, defender passes it back, play goes live with a
+// clear-the-ball requirement.
+// ═══════════════════════════════════════════════════════════
+
+/** Determine who is on which team. */
+function isOnPlayerTeam(pd) {
+    return pd === playerData || pd?.isTeammate;
+}
+
+/** Get the rim Z the given team is attacking. */
+function getAttackingRimZ(team) {
+    // Home / player team attacks -Z rim, opponents attack +Z rim
+    return team === 'home' ? HOME_RIM_Z : AWAY_RIM_Z;
+}
+
+/** Compute the check-ball spot (top of 3pt arc) for the receiving team. */
+function getCheckSpot(receivingTeam) {
+    // The receiving team checks at the top of the arc of the rim they are ATTACKING
+    const rimZ = getAttackingRimZ(receivingTeam);
+    // Check spot is at center X, offset from rim toward mid-court
+    const sign = rimZ < 0 ? 1 : -1; // offset toward center from the rim
+    return { x: 0, z: rimZ + sign * CHECK_SPOT_OFFSET_Z };
+}
+
+/**
+ * Get dead-ball repositioning targets for all AI players.
+ * Offense (receiving team) fans out around the 3pt arc.
+ * Defense (non-receiving team) positions inside the paint.
+ */
+function getDeadBallPositions(receivingTeam) {
+    const rimZ = getAttackingRimZ(receivingTeam);
+    const sign = rimZ < 0 ? 1 : -1;
+    const arcDist = 7.24; // 3pt arc radius
+
+    // Offense positions: fan around the arc (handler goes to top, others to wings/corners)
+    const offenseSpots = [
+        { x: -5.5, z: rimZ + sign * (arcDist - 1.0) },   // left wing
+        { x: 5.5,  z: rimZ + sign * (arcDist - 1.0) },   // right wing
+    ];
+    // Defense positions: inside the paint guarding the basket area
+    const defenseSpots = [
+        { x: 0,    z: rimZ + sign * 2.5 },   // center paint
+        { x: -2.8, z: rimZ + sign * 3.8 },   // left block
+        { x: 2.8,  z: rimZ + sign * 3.8 },   // right block
+    ];
+
+    return { offenseSpots, defenseSpots };
+}
+
+/**
+ * Find the nearest visible entity from a list to a given position.
+ */
+function findNearestEntity(entities, pos) {
+    let best = null, bestDist = Infinity;
+    for (const e of entities) {
+        if (!e?.group?.visible) continue;
+        if (e.stunTimer > 0) continue;
+        const dx = e.group.position.x - pos.x;
+        const dz = e.group.position.z - pos.z;
+        const d = dx * dx + dz * dz;
+        if (d < bestDist) { bestDist = d; best = e; }
+    }
+    return best;
+}
+
+/**
+ * Trigger the dead-ball / check-ball sequence.
+ * Called after a made basket or redirected OOB.
+ *
+ * @param {'home'|'away'} scoringTeam - the team that scored
+ * @param {'score'|'oob'} reason - why the dead ball triggered
+ */
+function triggerDeadBall(scoringTeam, reason) {
+    if (checkBallState || gameOverState) return;
+    // Only run on host (solo runs full sim, online host runs full sim)
+    if (gameMode !== 'solo' && !isHostSyncActive()) return;
+
+    // Determine receiving team
+    let receivingTeam;
+    if (reason === 'score' && gameRules.makeItTakeIt) {
+        receivingTeam = scoringTeam; // scoring team keeps it
+    } else if (reason === 'score') {
+        receivingTeam = scoringTeam === 'home' ? 'away' : 'home'; // losers ball
+    } else {
+        // OOB — receiving team is whoever didn't touch last (already computed
+        // by the caller; for simplicity, use the opposite of lastPossessionTeam)
+        receivingTeam = lastPossessionTeam === 'home' ? 'away' : 'home';
+    }
+
+    // Cancel any active stances / inbound
+    shootingStance = false;
+    passingStance = false;
+    passTargetTeammate = null;
+    resetShootInput();
+    resetPowerMeterCycle();
+    inboundState = null;
+
+    // Release and freeze ball
+    if (basketballData) {
+        if (basketballData.heldByPlayer && basketballData.heldByPlayerData) {
+            forceDropBall(basketballData, 0, 0);
+        }
+        basketballData.velocity.set(0, 0, 0);
+        basketballData.sleeping = true;
+        basketballData.heldByPlayer = false;
+        basketballData.heldByPlayerData = null;
+    }
+
+    const checkSpot = getCheckSpot(receivingTeam);
+    const positions = getDeadBallPositions(receivingTeam);
+
+    // Determine handler (the one who will walk to check spot and check the ball)
+    // Handler is on the receiving team. Pick the closest to the check spot.
+    const receivingPlayers = receivingTeam === 'home'
+        ? [playerData, ...teammates].filter(p => p?.group?.visible)
+        : opponents.filter(p => p?.group?.visible);
+
+    const handler = findNearestEntity(receivingPlayers, checkSpot) || receivingPlayers[0];
+
+    // Determine checker (defender nearest to the check spot)
+    const defendingPlayers = receivingTeam === 'home'
+        ? opponents.filter(p => p?.group?.visible)
+        : [playerData, ...teammates].filter(p => p?.group?.visible);
+
+    const checker = findNearestEntity(defendingPlayers, checkSpot) || defendingPlayers[0];
+
+    // Build role assignments for all AI
+    const roles = new Map(); // playerData → { role, target: {x, z} }
+
+    // Handler walks to check spot
+    if (handler) roles.set(handler, { role: 'handler', target: checkSpot });
+
+    // Checker walks to position in front of handler
+    if (checker) {
+        const rimZ = getAttackingRimZ(receivingTeam);
+        const sign = rimZ < 0 ? 1 : -1;
+        roles.set(checker, {
+            role: 'checker',
+            target: { x: checkSpot.x, z: checkSpot.z + sign * -CHECK_CHECKER_OFFSET }
+        });
+    }
+
+    // Remaining offense → arc spots
+    let offIdx = 0;
+    for (const p of receivingPlayers) {
+        if (p === handler || roles.has(p)) continue;
+        if (offIdx < positions.offenseSpots.length) {
+            roles.set(p, { role: 'offense', target: positions.offenseSpots[offIdx++] });
+        }
+    }
+
+    // Remaining defense → paint spots
+    let defIdx = 0;
+    for (const p of defendingPlayers) {
+        if (p === checker || roles.has(p)) continue;
+        if (defIdx < positions.defenseSpots.length) {
+            roles.set(p, { role: 'defense', target: positions.defenseSpots[defIdx++] });
+        }
+    }
+
+    matchLive = false;
+
+    checkBallState = {
+        phase: reason === 'score' ? 'celebration' : 'reposition',
+        elapsed: 0,
+        receivingTeam,
+        scoringTeam,
+        handler,
+        checker,
+        roles,
+        checkSpot,
+        reason,
+        passTimer: 0,
+        ballVisible: false,
+    };
+
+    // Show feedback
+    if (reason === 'score') {
+        // Already shown by registerMadeBasket
+    } else {
+        const teamLabel = receivingTeam === 'home' ? 'Your ball' : 'Opp ball';
+        showShotFeedback('Check Ball', teamLabel);
+    }
+}
+
+/** Check if check-ball is currently active. */
+function isCheckBallActive() {
+    return !!checkBallState;
+}
+
+/**
+ * Frame-by-frame check-ball state machine.
+ * Phases: celebration → reposition → handler_arrive → check_pass → return_pass → live
+ */
+function updateCheckBallState(delta) {
+    if (!checkBallState) return;
+
+    const st = checkBallState;
+    st.elapsed += delta;
+
+    // ── Phase: celebration — brief pause after a made basket ──
+    if (st.phase === 'celebration') {
+        // All players idle during celebration
+        updateCheckBallIdlePlayers(delta);
+
+        // Keep ball hidden (fell through net)
+        if (basketballData) {
+            basketballData.active = false;
+            basketballData.mesh.visible = false;
+        }
+
+        if (st.elapsed >= CHECK_CELEBRATION_SECS) {
+            st.phase = 'reposition';
+            st.elapsed = 0;
+        }
+        return;
+    }
+
+    // ── Phase: reposition — AI walks to assigned positions, handler walks to check spot ──
+    if (st.phase === 'reposition') {
+        let allArrived = true;
+
+        for (const [entity, assignment] of st.roles) {
+            if (!entity?.group?.visible) continue;
+            const pos = entity.group.position;
+            const dist = distXZ(pos, assignment.target);
+
+            if (dist > CHECK_ARRIVE_THRESHOLD) {
+                allArrived = false;
+                // Walk this entity to their target
+                if (entity === playerData) {
+                    // Auto-walk the player to their assigned position
+                    walkEntityToward(playerData, assignment.target.x, assignment.target.z, CHECK_WALK_SPEED, delta);
+                } else {
+                    walkEntityToward(entity, assignment.target.x, assignment.target.z, CHECK_WALK_SPEED, delta);
+                }
+            } else {
+                // Arrived — face the check spot
+                const faceAngle = Math.atan2(
+                    st.checkSpot.x - pos.x,
+                    st.checkSpot.z - pos.z
+                );
+                standEntityIdle(entity, faceAngle, delta);
+            }
+        }
+
+        // Timeout: don't wait forever for stragglers
+        if (allArrived || st.elapsed >= CHECK_REPOSITION_TIMEOUT) {
+            st.phase = 'handler_arrive';
+            st.elapsed = 0;
+        }
+        return;
+    }
+
+    // ── Phase: handler_arrive — handler is at the spot, ball appears in their hands ──
+    if (st.phase === 'handler_arrive') {
+        // Show ball in handler's hands
+        if (basketballData && st.handler) {
+            basketballData.active = false;
+            basketballData.mesh.visible = true;
+            basketballData.sleeping = true;
+            const handlerPos = st.handler.group.position;
+            const handlerGroundY = handlerPos.y + (st.handler.visualGroundOffsetY || 0.265);
+            basketballData.mesh.position.set(handlerPos.x, handlerGroundY + 1.18, handlerPos.z);
+        }
+
+        // Everyone idles
+        updateCheckBallIdlePlayers(delta);
+
+        if (st.elapsed >= CHECK_HANDLER_ARRIVE) {
+            st.phase = 'check_pass';
+            st.elapsed = 0;
+            st.passTimer = 0;
+        }
+        return;
+    }
+
+    // ── Phase: check_pass — handler passes to the checker (defender) ──
+    if (st.phase === 'check_pass') {
+        // Everyone idles
+        updateCheckBallIdlePlayers(delta);
+
+        st.passTimer += delta;
+
+        // Brief delay before pass (CHECK_AI_DELAY)
+        if (st.passTimer < CHECK_AI_DELAY) {
+            // Ball still in handler's hands
+            if (basketballData && st.handler) {
+                const hp = st.handler.group.position;
+                const hgy = hp.y + (st.handler.visualGroundOffsetY || 0.265);
+                basketballData.mesh.position.set(hp.x, hgy + 1.18, hp.z);
+            }
+            return;
+        }
+
+        // Animate pass: lerp ball from handler to checker over CHECK_PASS_DURATION
+        const passT = Math.min(1, (st.passTimer - CHECK_AI_DELAY) / CHECK_PASS_DURATION);
+        if (basketballData && st.handler && st.checker) {
+            const hp = st.handler.group.position;
+            const cp = st.checker.group.position;
+            const hgy = hp.y + (st.handler.visualGroundOffsetY || 0.265) + 1.18;
+            const cgy = cp.y + (st.checker.visualGroundOffsetY || 0.265) + 1.18;
+            // Simple lerp with a slight arc
+            const arcY = Math.sin(passT * Math.PI) * 0.4;
+            basketballData.mesh.position.set(
+                hp.x + (cp.x - hp.x) * passT,
+                hgy + (cgy - hgy) * passT + arcY,
+                hp.z + (cp.z - hp.z) * passT
+            );
+        }
+
+        if (passT >= 1) {
+            st.phase = 'return_pass';
+            st.elapsed = 0;
+            st.passTimer = 0;
+        }
+        return;
+    }
+
+    // ── Phase: return_pass — checker passes back to handler ──
+    if (st.phase === 'return_pass') {
+        updateCheckBallIdlePlayers(delta);
+
+        st.passTimer += delta;
+
+        // Brief hold, then pass back
+        if (st.passTimer < CHECK_AI_DELAY) {
+            if (basketballData && st.checker) {
+                const cp = st.checker.group.position;
+                const cgy = cp.y + (st.checker.visualGroundOffsetY || 0.265) + 1.18;
+                basketballData.mesh.position.set(cp.x, cgy, cp.z);
+            }
+            return;
+        }
+
+        const passT = Math.min(1, (st.passTimer - CHECK_AI_DELAY) / CHECK_PASS_DURATION);
+        if (basketballData && st.handler && st.checker) {
+            const hp = st.handler.group.position;
+            const cp = st.checker.group.position;
+            const hgy = hp.y + (st.handler.visualGroundOffsetY || 0.265) + 1.18;
+            const cgy = cp.y + (st.checker.visualGroundOffsetY || 0.265) + 1.18;
+            const arcY = Math.sin(passT * Math.PI) * 0.4;
+            basketballData.mesh.position.set(
+                cp.x + (hp.x - cp.x) * passT,
+                cgy + (hgy - cgy) * passT + arcY,
+                cp.z + (hp.z - cp.z) * passT
+            );
+        }
+
+        if (passT >= 1) {
+            st.phase = 'live';
+            st.elapsed = 0;
+        }
+        return;
+    }
+
+    // ── Phase: live — brief delay, then resume play ──
+    if (st.phase === 'live') {
+        if (st.elapsed >= CHECK_LIVE_DELAY) {
+            finalizeCheckBall();
+        } else {
+            updateCheckBallIdlePlayers(delta);
+        }
+        return;
+    }
+}
+
+/** Idle all AI players during check-ball (face the check spot). */
+function updateCheckBallIdlePlayers(delta) {
+    if (!checkBallState) return;
+    const st = checkBallState;
+
+    for (const [entity, assignment] of st.roles) {
+        if (!entity?.group?.visible) continue;
+        if (entity === playerData) {
+            // Auto-control player during check-ball
+            const pos = playerData.group.position;
+            const dist = distXZ(pos, assignment.target);
+            if (dist > CHECK_ARRIVE_THRESHOLD && st.phase === 'reposition') {
+                walkEntityToward(playerData, assignment.target.x, assignment.target.z, CHECK_WALK_SPEED, delta);
+            } else {
+                const faceAngle = Math.atan2(
+                    st.checkSpot.x - pos.x,
+                    st.checkSpot.z - pos.z
+                );
+                standEntityIdle(playerData, faceAngle, delta);
+            }
+        } else {
+            const pos = entity.group.position;
+            const faceAngle = Math.atan2(
+                st.checkSpot.x - pos.x,
+                st.checkSpot.z - pos.z
+            );
+            standEntityIdle(entity, faceAngle, delta);
+        }
+    }
+}
+
+/** Finalize check-ball: give ball to handler, set clear-ball, resume play. */
+function finalizeCheckBall() {
+    if (!checkBallState || !basketballData) {
+        checkBallState = null;
+        matchLive = true;
+        return;
+    }
+
+    const st = checkBallState;
+    const handler = st.handler;
+
+    // Give ball to the handler
+    basketballData.active = true;
+    basketballData.sleeping = false;
+    basketballData.heldByPlayer = true;
+    basketballData.heldByPlayerData = handler;
+    basketballData.mesh.visible = true;
+    basketballData.velocity.set(0, 0, 0);
+    basketballData._lastTouchRef = handler;
+
+    // Set clear-the-ball requirement
+    clearBallRequired = true;
+    clearBallTeam = st.receivingTeam;
+
+    // Track possession
+    lastPossessionTeam = st.receivingTeam;
+
+    // Reset shot clock if enabled
+    if (gameRules.shotClockEnabled) {
+        shotClockTimer = gameRules.shotClockDuration;
+        shotClockActive = true;
+    }
+
+    // Resume play
+    matchLive = true;
+    checkBallState = null;
+
+    // Restore player speed multipliers
+    for (const [entity] of st.roles) {
+        if (entity && entity !== playerData) {
+            entity.speedMultiplier = entity.baseSpeedMultiplier || 1.0;
+        }
+    }
+
+    // Send referee to sideline
+    if (refereeData?.group?.visible) {
+        refereeData._sidelineState = {
+            phase: 'walking',
+            target: { ...SOLO_TIPOFF_LAYOUT.refereeExit },
+            idleFacing: SOLO_TIPOFF_LAYOUT.refereeExit.facing
+        };
+    }
+}
+
+/**
+ * Check if the ball handler has cleared the 3pt arc.
+ * Called each frame when clearBallRequired is true.
+ * Once the handler crosses the arc, clearBallRequired is set to false.
+ */
+function updateClearBall() {
+    if (!clearBallRequired || !basketballData) return;
+
+    const holder = basketballData.heldByPlayerData;
+    if (!holder) return;
+
+    // Only check for the team that needs to clear
+    const isHolderOnClearTeam = (clearBallTeam === 'home' && isOnPlayerTeam(holder))
+        || (clearBallTeam === 'away' && !isOnPlayerTeam(holder));
+    if (!isHolderOnClearTeam) return;
+
+    // Check distance from the rim this team is attacking
+    const rimZ = getAttackingRimZ(clearBallTeam);
+    const holderZ = holder.group.position.z;
+    const holderX = holder.group.position.x;
+
+    // Distance from rim center on XZ
+    const distFromRim = Math.hypot(holderX, holderZ - rimZ);
+
+    // Ball is "cleared" when the holder is beyond the 3pt arc distance from the rim
+    if (distFromRim >= THREE_PT_DISTANCE) {
+        clearBallRequired = false;
+        clearBallTeam = null;
+    }
+}
+
+/**
+ * Check if shooting should be blocked due to clear-the-ball rule.
+ * Returns true if the player/AI should NOT be allowed to shoot.
+ */
+function isShotBlockedByClearBall(shooter) {
+    if (!clearBallRequired) return false;
+
+    // Only blocks the team that needs to clear
+    const isOnClearTeam = (clearBallTeam === 'home' && isOnPlayerTeam(shooter))
+        || (clearBallTeam === 'away' && !isOnPlayerTeam(shooter));
+
+    return isOnClearTeam;
+}
+
+// ─── Shot Clock System ─────────────────────────────────────
+
+/** Update the shot clock each frame. Called from animate loop. */
+function updateShotClock(delta) {
+    if (!gameRules.shotClockEnabled || !shotClockActive || !matchLive) {
+        if (shotClockEl) shotClockEl.style.display = 'none';
+        return;
+    }
+
+    shotClockTimer = Math.max(0, shotClockTimer - delta);
+
+    // Update HUD
+    if (shotClockEl && shotClockValueEl) {
+        shotClockEl.style.display = 'block';
+        const display = Math.ceil(shotClockTimer);
+        shotClockValueEl.textContent = String(display);
+        // Urgent styling under 5 seconds
+        shotClockEl.classList.toggle('sc-urgent', display <= 5);
+    }
+
+    // Violation: shot clock expired
+    if (shotClockTimer <= 0) {
+        shotClockActive = false;
+        shotClockTimer = 0;
+
+        // Determine who had possession
+        const holder = basketballData?.heldByPlayerData;
+        let violationTeam = lastPossessionTeam || 'home';
+        if (holder) {
+            violationTeam = isOnPlayerTeam(holder) ? 'home' : 'away';
+        }
+
+        showShotFeedback('Shot Clock Violation', violationTeam === 'home' ? 'Opp ball' : 'Your ball');
+
+        // Broadcast violation to guests
+        if (isHostSyncActive()) {
+            broadcastAction('shot_clock_violation', { violationTeam });
+        }
+
+        // Turnover → check-ball for the other team
+        lastPossessionTeam = violationTeam;
+        triggerDeadBall(violationTeam, 'oob');
+    }
+}
+
+/** Reset shot clock (e.g., on possession change or offensive rebound). */
+function resetShotClock() {
+    if (!gameRules.shotClockEnabled) return;
+    shotClockTimer = gameRules.shotClockDuration;
+    shotClockActive = true;
+}
+
+// ─── Goaltending Detection ────────────────────────────────
+
+/**
+ * Check if a player hitting the ball constitutes goaltending.
+ * Goaltending: ball is on its downward arc AND above rim height AND was shot.
+ * If detected, auto-award points to the shooting team.
+ *
+ * Called from resolvePlayerCollision in ball.js via a flag,
+ * or checked here when ball-player collision occurs.
+ */
+function checkGoaltending(ball, contactPlayer) {
+    if (!ball || !ball._lastShooterRef) return false;
+    if (ball.heldByPlayer) return false;
+
+    const ballY = ball.mesh.position.y;
+    const ballVelY = ball.velocity.y;
+    const rimY = 3.048; // regulation rim height
+
+    // Ball must be: above rim, on downward arc, was shot (has a shooter ref)
+    if (ballY > rimY && ballVelY < -0.5) {
+        // Check that the contact player is on the DEFENDING team
+        const shooter = ball._lastShooterRef;
+        const shooterIsHome = isOnPlayerTeam(shooter);
+        const contactIsHome = isOnPlayerTeam(contactPlayer);
+
+        // Goaltending only applies if the defender (opposite team) touches it
+        if (shooterIsHome !== contactIsHome) {
+            // Auto-award the basket
+            showShotFeedback('Goaltending!', shooterIsHome ? 'Your basket' : 'Opp basket');
+            if (isHostSyncActive()) {
+                broadcastAction('goaltend', { shooterIsHome });
+            }
+            registerMadeBasket('Goaltend');
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Callback from updateBasketball's player collision loop.
+ * Checks for goaltending on body contact with a shot in flight.
+ */
+function handleBallPlayerContact(ball, contactPlayer) {
+    if (!matchLive) return;
+    if (checkBallState || gameOverState) return;
+    checkGoaltending(ball, contactPlayer);
+}
+
+// ═══════════════════════════════════════════════════════════
+
 function setupSoloTipOff() {
     if (!playerData || !basketballData) return;
 
@@ -1400,6 +2089,25 @@ function startSoloGame() {
     blockHeld = false;
     countdownValue = COUNTDOWN_DURATION + 1;
 
+    // Reset game flow state
+    gameRules = { ...GAME_RULES_DEFAULT };
+    checkBallState = null;
+    clearBallRequired = false;
+    clearBallTeam = null;
+    lastPossessionTeam = null;
+    shotClockTimer = 0;
+    shotClockActive = false;
+    homeConsecutive = 0;
+    awayConsecutive = 0;
+    hotStreakTeam = null;
+    gameOverState = null;
+    totalScore = 0;
+    oppTotalScore = 0;
+    shotsMade = 0;
+    shotsAttempted = 0;
+    oppShotsMade = 0;
+    oppShotsAttempted = 0;
+
     // Fade out mode select overlay
     if (modeSelect) {
         modeSelect.classList.add('fade-out');
@@ -1408,12 +2116,24 @@ function startSoloGame() {
         }, 650);
     }
 
+    // Hide game over if visible from a previous game
+    if (gameOverOverlay) {
+        gameOverOverlay.style.display = 'none';
+        gameOverOverlay.classList.remove('show');
+    }
+
     // Spawn 3v3 teams
     for (let i = 0; i < 2; i++) addTeammate();
     for (let i = 0; i < 3; i++) addOpponent();
 
+    // Init player stats
+    initPlayerStats(playerData);
+
     // Build pre-game jump ball sequence
     setupSoloTipOff();
+
+    // Show score target on scoreboard
+    if (sbTarget) sbTarget.textContent = `First to ${gameRules.scoreTarget}`;
 
     // Switch to player camera and show HUD (slight delay masks camera transition)
     setTimeout(() => {
@@ -1458,6 +2178,35 @@ function handleMultiplayerGameStart(info) {
     // Store multiplayer state
     window._mpInfo = info;
 
+    // Apply room settings to game rules
+    const s = info.settings || {};
+    gameRules = {
+        scoreTarget: s.scoreTarget || GAME_RULES_DEFAULT.scoreTarget,
+        winByTwo: s.winByTwo !== undefined ? s.winByTwo : GAME_RULES_DEFAULT.winByTwo,
+        scoringMode: s.scoringMode || GAME_RULES_DEFAULT.scoringMode,
+        makeItTakeIt: s.makeItTakeIt !== undefined ? s.makeItTakeIt : GAME_RULES_DEFAULT.makeItTakeIt,
+        shotClockEnabled: !!s.shotClockEnabled,
+        shotClockDuration: s.shotClockDuration || GAME_RULES_DEFAULT.shotClockDuration,
+    };
+
+    // Reset game flow state
+    checkBallState = null;
+    clearBallRequired = false;
+    clearBallTeam = null;
+    lastPossessionTeam = null;
+    shotClockTimer = 0;
+    shotClockActive = false;
+    homeConsecutive = 0;
+    awayConsecutive = 0;
+    hotStreakTeam = null;
+    gameOverState = null;
+    totalScore = 0;
+    oppTotalScore = 0;
+    shotsMade = 0;
+    shotsAttempted = 0;
+    oppShotsMade = 0;
+    oppShotsAttempted = 0;
+
     // Count how many human players are on each team
     const assignments = info.slotAssignments;
     let homeHumans = 0, awayHumans = 0;
@@ -1474,6 +2223,9 @@ function handleMultiplayerGameStart(info) {
     for (let i = 0; i < needTeammates; i++) addTeammate();
     for (let i = 0; i < needOpponents; i++) addOpponent();
 
+    // Init player stats for the local player
+    initPlayerStats(playerData);
+
     if (info.isHost) {
         // Host: run game simulation locally, broadcast state
         startHostSync({
@@ -1487,7 +2239,7 @@ function handleMultiplayerGameStart(info) {
                 hm: shotsMade, ha: shotsAttempted,
                 am: oppShotsMade, aa: oppShotsAttempted
             }),
-            getGamePhase: () => matchLive ? 'playing' : 'waiting'
+            getGamePhase: () => serializeGamePhase()
         });
 
         // Start tip-off sequence (same as solo)
@@ -1501,6 +2253,9 @@ function handleMultiplayerGameStart(info) {
             onGameOver: handleRemoteGameOver
         });
     }
+
+    // Show score target on scoreboard
+    if (sbTarget) sbTarget.textContent = `First to ${gameRules.scoreTarget}`;
 
     setTimeout(() => {
         switchCameraMode('player');
@@ -1602,17 +2357,103 @@ function applyGuestState(delta) {
         if (scores.ha !== undefined) shotsAttempted = scores.ha;
         if (scores.am !== undefined) oppShotsMade = scores.am;
         if (scores.aa !== undefined) oppShotsAttempted = scores.aa;
-        updateScoreHUD();
+        updateScoreHud();
     }
 
-    // Apply game phase
-    if (gamePhase === 'playing' && !matchLive) {
+    // Apply game phase from host (rich object from serializeGamePhase)
+    applyGuestGamePhase(gamePhase);
+}
+
+/**
+ * Apply the host's serialized game phase state on a guest client.
+ * Updates local HUD, matchLive, check-ball visuals, shot clock, streak, and game over.
+ * Guests do NOT run game flow logic — they mirror the host.
+ */
+function applyGuestGamePhase(gp) {
+    if (!gp) return;
+
+    const phase = gp.ph || 'waiting';
+
+    // ── Match live state ──
+    if (phase === 'playing' && !matchLive) {
         matchLive = true;
+    } else if (phase !== 'playing' && matchLive) {
+        matchLive = false;
+    }
+
+    // ── Check-ball state (guest mirrors visuals only) ──
+    if (gp.cb) {
+        // Lightweight guest-side check-ball state for HUD display
+        if (!checkBallState || checkBallState.phase !== gp.cb.p) {
+            // Phase transition — show feedback on first sight
+            if (gp.cb.p === 'celebration' && gp.cb.rs === 'score') {
+                // Score feedback already shown by score action
+            } else if (!checkBallState && gp.cb.rs === 'oob') {
+                const teamLabel = gp.cb.rt === 'home' ? 'Your ball' : 'Opp ball';
+                showShotFeedback('Check Ball', teamLabel);
+            }
+        }
+        checkBallState = {
+            phase: gp.cb.p,
+            receivingTeam: gp.cb.rt,
+            scoringTeam: gp.cb.st,
+            reason: gp.cb.rs,
+            // Guest doesn't need roles/handler/checker — host drives entity positions
+            elapsed: 0,
+            roles: new Map(),
+        };
+    } else if (checkBallState) {
+        checkBallState = null;
+    }
+
+    // ── Clear-the-ball state ──
+    if (gp.clr) {
+        clearBallRequired = true;
+        clearBallTeam = gp.clr;
+    } else {
+        clearBallRequired = false;
+        clearBallTeam = null;
+    }
+
+    // ── Shot clock ──
+    if (gp.sc) {
+        shotClockTimer = gp.sc.t;
+        shotClockActive = gp.sc.a;
+        // Update HUD
+        if (shotClockEl && shotClockValueEl) {
+            shotClockEl.style.display = shotClockActive ? 'block' : 'none';
+            const display = Math.ceil(shotClockTimer);
+            shotClockValueEl.textContent = String(display);
+            shotClockEl.classList.toggle('sc-urgent', display <= 5);
+        }
+    } else {
+        if (shotClockEl) shotClockEl.style.display = 'none';
+        shotClockActive = false;
+    }
+
+    // ── Hot streak ──
+    if (gp.sk) {
+        hotStreakTeam = gp.sk.tm;
+        if (hotStreakTeam === 'home') homeConsecutive = gp.sk.ct;
+        else awayConsecutive = gp.sk.ct;
+    } else {
+        hotStreakTeam = null;
+    }
+    updateStreakHud();
+
+    // ── Game over ──
+    if (gp.go && !gameOverState) {
+        gameOverState = {
+            winningTeam: gp.go.w,
+            homeScore: totalScore,
+            awayScore: oppTotalScore,
+        };
+        showGameOverScreen(gp.go.w);
     }
 }
 
 function handleRemoteGameAction(action, data) {
-    // Handle discrete events from host (score updates, etc.)
+    // Handle discrete events from host
     if (action === 'score') {
         if (data.team === 'home') {
             totalScore = data.total || totalScore;
@@ -1623,8 +2464,18 @@ function handleRemoteGameAction(action, data) {
             oppShotsMade = data.makes || oppShotsMade;
             oppShotsAttempted = data.attempts || oppShotsAttempted;
         }
-        updateScoreHUD();
-        showShotFeedback(data.label || 'Score', `Total ${data.total}`);
+        updateScoreHud();
+        const prefix = data.team === 'away' ? 'OPP ' : '';
+        const sub = data.team === 'away' ? `Opp ${data.total}` : `Total ${data.total}`;
+        showShotFeedback(`${prefix}${data.label || 'Score'} +${data.points || ''}`, sub);
+    } else if (action === 'shot_clock_violation') {
+        const teamLabel = data.violationTeam === 'home' ? 'Opp ball' : 'Your ball';
+        showShotFeedback('Shot Clock Violation', teamLabel);
+    } else if (action === 'goaltend') {
+        const sub = data.shooterIsHome ? 'Your basket' : 'Opp basket';
+        showShotFeedback('Goaltending!', sub);
+    } else if (action === 'clear_ball_done') {
+        // Ball has been cleared — guest just mirrors state from game phase
     }
 }
 
@@ -1633,9 +2484,15 @@ function handleRemoteGameOver(winner, score) {
     if (score) {
         totalScore = score.home || 0;
         oppTotalScore = score.away || 0;
-        updateScoreHUD();
+        updateScoreHud();
     }
-    showShotFeedback(winner === 'home' ? 'You Win!' : 'You Lose', `${totalScore} - ${oppTotalScore}`);
+
+    gameOverState = {
+        winningTeam: winner,
+        homeScore: totalScore,
+        awayScore: oppTotalScore,
+    };
+    showGameOverScreen(winner);
 }
 
 function startFreePlay() {
@@ -2818,23 +3675,244 @@ function registerMadeBasket(label = 'Bucket') {
     const shooter = basketballData?._lastShooterRef;
     const isOpponentShot = shooter && !shooter.isTeammate && shooter !== playerData;
 
-    // Three-point detection: check shooter distance from rim at release time
+    // ── Street scoring: 1s and 2s vs NBA 2s and 3s ──
     const releaseDist = basketballData?._lastShotReleaseDistToRim || 0;
-    const points = releaseDist >= THREE_PT_DISTANCE ? SHOT_POINTS + 1 : SHOT_POINTS;
-    const displayLabel = points === 3 ? 'Three!' : label;
+    const isLong = releaseDist >= THREE_PT_DISTANCE;
+    let points;
+    if (gameRules.scoringMode === 'street') {
+        points = isLong ? 2 : 1;   // 1s and 2s
+    } else {
+        points = isLong ? 3 : 2;   // NBA 2s and 3s
+    }
 
+    const isDunk = label === 'Dunk';
+    const displayLabel = isLong ? (gameRules.scoringMode === 'street' ? 'Deep!' : 'Three!') : label;
+    const scoringTeam = isOpponentShot ? 'away' : 'home';
+
+    // ── Per-player stat tracking ──
+    if (shooter && shooter._stats) {
+        shooter._stats.points += points;
+        shooter._stats.fgMade += 1;
+        shooter._stats.fgAttempted += 1;
+        if (isDunk) shooter._stats.dunks += 1;
+    }
+
+    // ── Update team totals ──
     if (isOpponentShot) {
         oppTotalScore += points;
         oppShotsMade += 1;
         scoreCooldown = Math.max(scoreCooldown, SCORE_COOLDOWN);
-        updateScoreHud();
-        showShotFeedback(`OPP ${displayLabel} +${points}`, `Opp ${oppTotalScore}`);
     } else {
         totalScore += points;
         shotsMade += 1;
         scoreCooldown = Math.max(scoreCooldown, SCORE_COOLDOWN);
-        updateScoreHud();
-        showShotFeedback(`${displayLabel} +${points}`, `Total ${totalScore}`);
+    }
+
+    // ── Hot streak tracking ──
+    if (scoringTeam === 'home') {
+        homeConsecutive += 1;
+        awayConsecutive = 0;
+        hotStreakTeam = homeConsecutive >= HOT_STREAK_THRESHOLD ? 'home' : hotStreakTeam;
+    } else {
+        awayConsecutive += 1;
+        homeConsecutive = 0;
+        hotStreakTeam = awayConsecutive >= HOT_STREAK_THRESHOLD ? 'away' : hotStreakTeam;
+    }
+    // Clear streak if other team scores
+    if (hotStreakTeam && hotStreakTeam !== scoringTeam) {
+        hotStreakTeam = null;
+    }
+    updateStreakHud();
+
+    // ── HUD update ──
+    updateScoreHud();
+    const subText = isOpponentShot ? `Opp ${oppTotalScore}` : `Total ${totalScore}`;
+    const prefix = isOpponentShot ? 'OPP ' : '';
+    showShotFeedback(`${prefix}${displayLabel} +${points}`, subText);
+
+    // ── Broadcast score event to guests (online host only) ──
+    if (isHostSyncActive()) {
+        broadcastAction('score', {
+            team: scoringTeam,
+            points,
+            label: displayLabel,
+            total: scoringTeam === 'home' ? totalScore : oppTotalScore,
+            makes: scoringTeam === 'home' ? shotsMade : oppShotsMade,
+            attempts: scoringTeam === 'home' ? shotsAttempted : oppShotsAttempted,
+        });
+    }
+
+    // ── Win condition check (host only — solo or online host) ──
+    const isSimHost = gameMode === 'solo' || isHostSyncActive();
+    if (isSimHost && checkWinCondition()) return;
+
+    // ── Trigger dead ball (check-ball ceremony) — host only ──
+    if (isSimHost) {
+        lastPossessionTeam = scoringTeam;
+        // Small delay before dead ball so the net animation / feedback plays
+        setTimeout(() => {
+            if (!gameOverState) triggerDeadBall(scoringTeam, 'score');
+        }, 100);
+    }
+}
+
+/** Track a missed shot attempt (called when ball bounces off rim without scoring). */
+function registerShotAttempt(shooter) {
+    if (!shooter) return;
+    const isOpp = shooter && !shooter.isTeammate && shooter !== playerData;
+    if (isOpp) {
+        oppShotsAttempted += 1;
+    } else {
+        shotsAttempted += 1;
+    }
+    if (shooter._stats) {
+        shooter._stats.fgAttempted += 1;
+    }
+}
+
+/** Initialize per-player stats on a playerData object. */
+function initPlayerStats(pd) {
+    pd._stats = {
+        points: 0,
+        fgMade: 0,
+        fgAttempted: 0,
+        dunks: 0,
+        steals: 0,
+    };
+}
+
+/** Check if either team has reached the score target and won. */
+function checkWinCondition() {
+    const target = gameRules.scoreTarget;
+    const homeWins = totalScore >= target && (!gameRules.winByTwo || totalScore - oppTotalScore >= 2);
+    const awayWins = oppTotalScore >= target && (!gameRules.winByTwo || oppTotalScore - totalScore >= 2);
+
+    if (homeWins) {
+        triggerGameOver('home');
+        return true;
+    }
+    if (awayWins) {
+        triggerGameOver('away');
+        return true;
+    }
+    return false;
+}
+
+/** Trigger the game over screen. */
+function triggerGameOver(winningTeam) {
+    if (gameOverState) return;
+
+    matchLive = false;
+    checkBallState = null;
+    inboundState = null;
+
+    gameOverState = {
+        winningTeam,
+        homeScore: totalScore,
+        awayScore: oppTotalScore,
+    };
+
+    // Cancel all stances
+    shootingStance = false;
+    passingStance = false;
+    passTargetTeammate = null;
+    resetShootInput();
+
+    // Freeze ball
+    if (basketballData) {
+        basketballData.velocity.set(0, 0, 0);
+        basketballData.sleeping = true;
+    }
+
+    // Broadcast game over to guests if online host
+    if (isHostSyncActive()) {
+        broadcastGameOver(winningTeam, { home: totalScore, away: oppTotalScore });
+    }
+
+    showGameOverScreen(winningTeam);
+}
+
+/** Build and show the game over overlay. */
+function showGameOverScreen(winningTeam) {
+    if (!gameOverOverlay || !gameOverTitle || !gameOverScore || !gameOverStats) return;
+
+    const isHomeWin = winningTeam === 'home';
+    gameOverTitle.textContent = isHomeWin ? 'YOU WIN!' : 'GAME OVER';
+    gameOverTitle.style.color = isHomeWin ? '#ff6a3a' : '#e63946';
+
+    gameOverScore.textContent = `${totalScore} - ${oppTotalScore}`;
+
+    // Build per-player stat table
+    const allPlayers = [playerData, ...teammates, ...opponents].filter(p => p?.group?.visible && p._stats);
+    let statsHtml = '<table class="go-stats-table"><thead><tr><th>Player</th><th>PTS</th><th>FG</th><th>DNK</th></tr></thead><tbody>';
+    for (const pd of allPlayers) {
+        const s = pd._stats;
+        const name = pd === playerData ? 'You' : (pd.name || 'AI');
+        const fg = s.fgAttempted > 0 ? `${s.fgMade}/${s.fgAttempted}` : '0/0';
+        const team = isOnPlayerTeam(pd) ? 'home' : 'away';
+        statsHtml += `<tr class="go-row-${team}"><td>${name}</td><td>${s.points}</td><td>${fg}</td><td>${s.dunks}</td></tr>`;
+    }
+    statsHtml += '</tbody></table>';
+    gameOverStats.innerHTML = statsHtml;
+
+    gameOverOverlay.style.display = 'flex';
+    gameOverOverlay.classList.add('show');
+}
+
+/**
+ * Serialize the full game flow state for network broadcast.
+ * Called by the host's getGamePhase callback at 30Hz.
+ * Returns an object that guests can use to mirror the host's game state.
+ */
+function serializeGamePhase() {
+    // Base phase string for backwards compatibility
+    let phase = 'waiting';
+    if (gameOverState) phase = 'game_over';
+    else if (checkBallState) phase = 'check_ball';
+    else if (matchLive) phase = 'playing';
+
+    return {
+        ph: phase,
+        // Check-ball state (null when not active)
+        cb: checkBallState ? {
+            p: checkBallState.phase,           // celebration/reposition/handler_arrive/check_pass/return_pass/live
+            rt: checkBallState.receivingTeam,   // 'home' or 'away'
+            st: checkBallState.scoringTeam,     // 'home' or 'away'
+            rs: checkBallState.reason,          // 'score' or 'oob'
+        } : null,
+        // Clear-the-ball state
+        clr: clearBallRequired ? clearBallTeam : null,
+        // Shot clock
+        sc: gameRules.shotClockEnabled ? {
+            t: Math.round(shotClockTimer * 10) / 10,
+            a: shotClockActive,
+        } : null,
+        // Hot streak
+        sk: hotStreakTeam ? {
+            tm: hotStreakTeam,
+            ct: hotStreakTeam === 'home' ? homeConsecutive : awayConsecutive,
+        } : null,
+        // Game over
+        go: gameOverState ? {
+            w: gameOverState.winningTeam,
+        } : null,
+        // Match live flag
+        ml: matchLive,
+    };
+}
+
+/** Update the hot streak HUD indicator. */
+function updateStreakHud() {
+    if (!streakHud) return;
+    if (hotStreakTeam) {
+        const label = hotStreakTeam === 'home' ? 'HOME' : 'AWAY';
+        const count = hotStreakTeam === 'home' ? homeConsecutive : awayConsecutive;
+        streakHud.textContent = `${label} ON FIRE ${count}`;
+        streakHud.classList.add('active');
+        streakHud.classList.toggle('streak-home', hotStreakTeam === 'home');
+        streakHud.classList.toggle('streak-away', hotStreakTeam === 'away');
+    } else {
+        streakHud.classList.remove('active', 'streak-home', 'streak-away');
     }
 }
 
@@ -3108,6 +4186,7 @@ function addOpponent() {
     opp._collider = collider;
     playerColliders.push(collider);
 
+    initPlayerStats(opp);
     opponents.push(opp);
 }
 
@@ -3245,8 +4324,14 @@ function findNearestSeatForAI(pd) {
 function updateAISitting(pd, delta) {
     const st = pd._aiSitState;
 
+    // Cooldown after failed bench attempt (stuck on collider)
+    if (pd._benchCooldown > 0) {
+        pd._benchCooldown -= delta;
+        if (!st) return;
+    }
+
     // Initiate bench-seek if stamina is low and not already sitting/seeking
-    if (!st && pd.stamina < STAMINA_AI_SEEK_BENCH && pd.stunTimer <= 0) {
+    if (!st && pd.stamina < STAMINA_AI_SEEK_BENCH && pd.stunTimer <= 0 && !(pd._benchCooldown > 0)) {
         // If holding the ball, drop it first before heading to bench
         if (basketballData?.heldByPlayer && basketballData.heldByPlayerData === pd) {
             const facing = pd.facingAngle || 0;
@@ -3274,6 +4359,21 @@ function updateAISitting(pd, delta) {
             st.startFacing = pd.facingAngle || 0;
             pd.velocity.set(0, 0, 0);
             pd.velocityY = 0;
+            return;
+        }
+        // Stuck detection: if we haven't gotten closer in ~0.5s, give up on this bench
+        st._stuckTimer = (st._stuckTimer || 0) + delta;
+        if (st._stuckTimer > 0.1 && !st._prevDist) st._prevDist = dist;
+        if (st._stuckTimer > 0.6) {
+            const progress = (st._prevDist || dist) - dist;
+            if (progress < 0.1) {
+                // Not making meaningful progress — stuck on a collider. Abandon.
+                pd._aiSitState = null;
+                pd._benchCooldown = 5.0; // Don't try another bench for 5 seconds
+                return;
+            }
+            st._prevDist = dist;
+            st._stuckTimer = 0;
         }
         // Walking is handled in the AI update by setting input toward seat
         return;
@@ -3612,9 +4712,9 @@ function updateOpponentAI(opp, delta) {
             return;
         }
 
-        // Attempt dunk if very close to rim, moving, and has stamina
+        // Attempt dunk if very close to rim, moving, and has stamina (and clear-ball satisfied)
         if (distToRim < OPP_DUNK_APPROACH_DIST && opp._holdTimer > 0.3
-            && opp.stamina >= STAMINA_DUNK_COST && !opp._dunkState) {
+            && opp.stamina >= STAMINA_DUNK_COST && !opp._dunkState && !isShotBlockedByClearBall(opp)) {
             // Check if a dunk rim is reachable — give the opponent a jump boost first
             const dunkRim = findOppDunkRim(opp, OPP_TARGET_RIM_Z);
             if (dunkRim && Math.random() < OPP_DUNK_CHANCE) {
@@ -3631,8 +4731,8 @@ function updateOpponentAI(opp, delta) {
             }
         }
 
-        // Enter shooting prep if in range and not too pressured
-        if (inShootRange && !pressured && opp._holdTimer > 0.5) {
+        // Enter shooting prep if in range and not too pressured (and clear-ball rule is satisfied)
+        if (inShootRange && !pressured && opp._holdTimer > 0.5 && !isShotBlockedByClearBall(opp)) {
             opp._shootPrep = true;
             opp._shootTimer = 0;
             basketballData._shootingStance = true;
@@ -3994,6 +5094,7 @@ function addTeammate() {
     tm._collider = collider;
     playerColliders.push(collider);
 
+    initPlayerStats(tm);
     teammates.push(tm);
 }
 
@@ -4052,7 +5153,8 @@ function getTeammateChestY(tm) {
 }
 
 /** Find the best open ally (other teammate or player) to pass to.
- *  Scores by receiver openness, rim proximity, and pass-lane clearance. */
+ *  Scores by receiver openness, rim proximity, pass-lane clearance,
+ *  scoring position, and human-player preference. */
 function findOpenTeammateForPass(fromTm) {
     let best = null;
     let bestScore = -Infinity;
@@ -4067,7 +5169,7 @@ function findOpenTeammateForPass(fromTm) {
     // Lower the minimum openness threshold when passer is swarmed
     const minOpenness = passerNearbyCount >= 2 ? 1.2 : 2.0;
 
-    function scoreTarget(targetPos) {
+    function scoreTarget(targetPos, isHuman) {
         let nearestEnemyDist = Infinity;
         for (const opp of opponents) {
             if (!opp.group.visible) continue;
@@ -4077,7 +5179,8 @@ function findOpenTeammateForPass(fromTm) {
         if (nearestEnemyDist < minOpenness) return null;
 
         const openness = Math.min(nearestEnemyDist, 8);
-        const rimProximity = Math.max(0, 20 - Math.hypot(targetPos.x, targetPos.z - TM_TARGET_RIM_Z));
+        const distToRim = Math.hypot(targetPos.x, targetPos.z - TM_TARGET_RIM_Z);
+        const rimProximity = Math.max(0, 20 - distToRim);
 
         // Penalize if an opponent is standing in the pass lane
         const passDx = targetPos.x - fromPos.x;
@@ -4099,21 +5202,42 @@ function findOpenTeammateForPass(fromTm) {
             }
         }
 
-        return openness * 3 + rimProximity - lanePenalty;
+        let score = openness * 3 + rimProximity - lanePenalty;
+
+        // Scoring position bonus: target is in shooting/dunking range AND wide open
+        const inScoringRange = distToRim > TM_SHOOT_RANGE_MIN && distToRim < TM_SHOOT_RANGE_MAX;
+        const wideOpen = nearestEnemyDist > TM_WIDE_OPEN_DIST;
+        if (inScoringRange && wideOpen) {
+            score += TM_PASS_SCORING_POS_BONUS;
+        }
+        // Extra bonus for being very close to rim (dunk/layup territory)
+        if (distToRim < TM_DUNK_APPROACH_DIST + 1.0 && nearestEnemyDist > 2.0) {
+            score += 4.0;
+        }
+
+        // Human player preference: if the user is open and near the basket, strongly prefer them
+        if (isHuman && inScoringRange) {
+            score += TM_PASS_PLAYER_BONUS;
+        } else if (isHuman && distToRim < 12) {
+            // Moderate bonus for human even at medium range — player wants the ball
+            score += TM_PASS_PLAYER_BONUS * 0.4;
+        }
+
+        return score;
     }
 
     for (const other of teammates) {
         if (other === fromTm || !other.group.visible || other.stunTimer > 0 || other._aiSitState) continue;
-        const score = scoreTarget(other.group.position);
+        const score = scoreTarget(other.group.position, false);
         if (score !== null && score > bestScore) {
             bestScore = score;
             best = other;
         }
     }
 
-    // Also consider the player as a pass target
+    // Also consider the player as a pass target — with human preference bonus
     if (playerData?.group?.visible && playerData.stunTimer <= 0 && !sitState) {
-        const score = scoreTarget(playerData.group.position);
+        const score = scoreTarget(playerData.group.position, true);
         if (score !== null && score > bestScore) {
             bestScore = score;
             best = playerData;
@@ -4238,26 +5362,11 @@ function updateTeammateAI(tm, delta) {
             if (d < 3.5) nearbyEnemyCount++;
         }
         const pressured = nearestEnemyDist < 2.5;
-        const swarmed = nearbyEnemyCount >= 2;  // multiple defenders closing in
+        const swarmed = nearbyEnemyCount >= 2;
+        const wideOpen = nearestEnemyDist > TM_WIDE_OPEN_DIST;
+        const clearBallBlocked = isShotBlockedByClearBall(tm);
 
-        // Pass to open ally when pressured/swarmed or held too long
-        // Swarmed teammates pass much faster — they're about to lose the ball
-        const passHoldThreshold = swarmed ? 0.12 : 0.3;
-        if ((pressured && tm._holdTimer > passHoldThreshold) || (swarmed && tm._holdTimer > 0.08) || tm._holdTimer > 4.0) {
-            const passTarget = findOpenTeammateForPass(tm);
-            if (passTarget) {
-                const tgtPos = passTarget.group.position;
-                _passTargetPos.set(tgtPos.x, tgtPos.y + (passTarget.visualGroundOffsetY || 0) + 1.18, tgtPos.z);
-                passBallToTarget(basketballData, tm, _passTargetPos, 'chest');
-                drainStamina(tm, STAMINA_PASS_COST);
-                tm._holdTimer = 0;
-                tm._shootPrep = false;
-                updatePlayer(tm, delta, tmInput, null, filteredColliders, null);
-                return;
-            }
-        }
-
-        // Shooting prep phase
+        // Shooting prep phase (already committed to shooting — finish it)
         if (tm._shootPrep) {
             tm._shootTimer = (tm._shootTimer || 0) + delta;
             // Face the rim
@@ -4289,9 +5398,9 @@ function updateTeammateAI(tm, delta) {
             return;
         }
 
-        // Attempt dunk if very close to rim
-        if (distToRim < TM_DUNK_APPROACH_DIST && tm._holdTimer > 0.3
-            && tm.stamina >= STAMINA_DUNK_COST && !tm._dunkState) {
+        // 1. DUNK — highest priority when close to rim (less hesitation than before)
+        if (distToRim < TM_DUNK_APPROACH_DIST && tm._holdTimer > TM_DUNK_HOLD_MIN
+            && tm.stamina >= STAMINA_DUNK_COST && !tm._dunkState && !clearBallBlocked) {
             const dunkRim = findOppDunkRim(tm, TM_TARGET_RIM_Z);
             if (dunkRim && Math.random() < TM_DUNK_CHANCE) {
                 tm.velocityY = 7.5;
@@ -4305,8 +5414,8 @@ function updateTeammateAI(tm, delta) {
             }
         }
 
-        // Enter shooting prep if in range and not pressured
-        if (inShootRange && !pressured && tm._holdTimer > 0.5) {
+        // 2. SHOOT — wide open: shoot quickly with minimal hesitation
+        if (inShootRange && wideOpen && tm._holdTimer > TM_SHOOT_HOLD_OPEN && !clearBallBlocked) {
             tm._shootPrep = true;
             tm._shootTimer = 0;
             basketballData._shootingStance = true;
@@ -4317,18 +5426,59 @@ function updateTeammateAI(tm, delta) {
             return;
         }
 
-        // Otherwise dribble toward the target rim — with defender avoidance
+        // 3. SHOOT — normal: in range and not heavily pressured
+        if (inShootRange && !pressured && tm._holdTimer > TM_SHOOT_HOLD_DEFAULT && !clearBallBlocked) {
+            tm._shootPrep = true;
+            tm._shootTimer = 0;
+            basketballData._shootingStance = true;
+            tm.velocity.set(0, 0, 0);
+            const tmCarry = { holding: true, shooting: true, dribbling: false,
+                dribblePhase: 0, dunking: false, hanging: false, seated: false, seatSettled: false };
+            updatePlayer(tm, delta, tmInput, null, filteredColliders, tmCarry);
+            return;
+        }
+
+        // 4. PASS — when pressured/swarmed or held too long, find an open target
+        const passHoldThreshold = swarmed ? 0.12 : 0.3;
+        if ((pressured && tm._holdTimer > passHoldThreshold) || (swarmed && tm._holdTimer > 0.08) || tm._holdTimer > 4.0) {
+            const passTarget = findOpenTeammateForPass(tm);
+            if (passTarget) {
+                const tgtPos = passTarget.group.position;
+                _passTargetPos.set(tgtPos.x, tgtPos.y + (passTarget.visualGroundOffsetY || 0) + 1.18, tgtPos.z);
+                passBallToTarget(basketballData, tm, _passTargetPos, 'chest');
+                drainStamina(tm, STAMINA_PASS_COST);
+                tm._holdTimer = 0;
+                tm._shootPrep = false;
+                updatePlayer(tm, delta, tmInput, null, filteredColliders, null);
+                return;
+            }
+        }
+
+        // 5. CONTESTED SHOT fallback — if held too long and still in range, just shoot
+        if (inShootRange && tm._holdTimer > TM_SHOOT_CONTESTED_HOLD && nearestEnemyDist > 1.5 && !clearBallBlocked) {
+            tm._shootPrep = true;
+            tm._shootTimer = 0;
+            basketballData._shootingStance = true;
+            tm.velocity.set(0, 0, 0);
+            const tmCarry = { holding: true, shooting: true, dribbling: false,
+                dribblePhase: 0, dunking: false, hanging: false, seated: false, seatSettled: false };
+            updatePlayer(tm, delta, tmInput, null, filteredColliders, tmCarry);
+            return;
+        }
+
+        // 6. DRIBBLE — drive toward the target rim with defender avoidance
         const atDriveTarget = tm._driveTarget && Math.hypot(tm._driveTarget.x - tmPos.x, tm._driveTarget.z - tmPos.z) < 1.2;
         const tmDriveStale = (tm._driveAge = (tm._driveAge || 0) + delta) > 1.8;
         if (!tm._driveTarget || tm._holdTimer < 0.05 || atDriveTarget || tmDriveStale || (swarmed && tm._driveAge > 0.5)) {
             tm._driveAge = 0;
             const seed = tm._holdSeed || 0.5;
             const baseX = (seed > 0.5 ? 3.5 : -3.5) * (seed - 0.25);
-            const baseZ = TM_TARGET_RIM_Z + 3.0 + Math.random() * 4.0;
+            // Drive targets closer to rim — more aggressive approach
+            const baseZ = TM_TARGET_RIM_Z + 2.0 + Math.random() * 3.5;
             let bestX = baseX, bestZ = baseZ, bestClear = 0;
             for (let attempt = 0; attempt < 5; attempt++) {
                 const cx = (attempt === 0) ? baseX : -6 + Math.random() * 12;
-                const cz = (attempt === 0) ? baseZ : TM_TARGET_RIM_Z + 2.0 + Math.random() * 6.0;
+                const cz = (attempt === 0) ? baseZ : TM_TARGET_RIM_Z + 1.5 + Math.random() * 5.0;
                 let minD = Infinity;
                 for (const opp2 of opponents) {
                     if (!opp2.group.visible || opp2.stunTimer > 0) continue;
@@ -4401,25 +5551,97 @@ function updateTeammateAI(tm, delta) {
         const isAlly = holder === playerData || (holder && holder.isTeammate);
 
         if (isAlly && holder?.group?.visible) {
-            // Ally has ball — spread out near the target rim for a pass
-            if (!tm._positionTarget || Math.random() < 0.02) {
-                const idx = teammates.indexOf(tm);
-                const slots = [{ x: -5, z: TM_TARGET_RIM_Z + 6 }, { x: 5, z: TM_TARGET_RIM_Z + 6 },
-                               { x: 0, z: TM_TARGET_RIM_Z + 9 }, { x: -3, z: TM_TARGET_RIM_Z + 3 },
-                               { x: 3, z: TM_TARGET_RIM_Z + 3 }];
-                const slot = slots[idx % slots.length];
-                tm._positionTarget = {
-                    x: slot.x + (Math.random() - 0.5) * 2,
-                    z: slot.z + (Math.random() - 0.5) * 2
-                };
+            // Ally has ball — find the best open position near the attacking rim
+            // Re-evaluate periodically or if current target is reached/stale
+            const atTarget = tm._positionTarget && Math.hypot(tm._positionTarget.x - tmPos.x, tm._positionTarget.z - tmPos.z) < 1.5;
+            tm._posRevalTimer = (tm._posRevalTimer || 0) + delta;
+            if (!tm._positionTarget || atTarget || tm._posRevalTimer > 2.0) {
+                tm._posRevalTimer = 0;
+                const holderPos = holder.group.position;
+                let bestCandidate = null;
+                let bestCandidateScore = -Infinity;
+
+                // Evaluate 8 candidate positions around the attacking rim
+                for (let ci = 0; ci < 8; ci++) {
+                    // Spread candidates around the rim at varying distances and angles
+                    const angle = (ci / 8) * Math.PI * 2;
+                    const dist = 3.0 + (ci % 3) * 2.5; // 3, 5.5, 8m rings
+                    const cx = Math.sin(angle) * dist;
+                    const cz = TM_TARGET_RIM_Z + Math.abs(Math.cos(angle) * dist); // stay on offensive side
+
+                    // Clamp to court bounds
+                    const px = Math.max(-7, Math.min(7, cx));
+                    const pz = Math.max(TM_TARGET_RIM_Z + 1.5, Math.min(TM_TARGET_RIM_Z + 12, cz));
+
+                    // Score: nearest defender distance (want open space)
+                    let nearestDefDist = Infinity;
+                    for (const opp of opponents) {
+                        if (!opp.group.visible || opp.stunTimer > 0) continue;
+                        const d = Math.hypot(opp.group.position.x - px, opp.group.position.z - pz);
+                        if (d < nearestDefDist) nearestDefDist = d;
+                    }
+
+                    // Score: distance to rim (closer is better for scoring)
+                    const rimDist = Math.hypot(px, pz - TM_TARGET_RIM_Z);
+
+                    // Score: passing lane clearance from ball holder
+                    const laneDx = px - holderPos.x;
+                    const laneDz = pz - holderPos.z;
+                    const laneDist = Math.hypot(laneDx, laneDz);
+                    let laneBlocked = 0;
+                    if (laneDist > 1.0) {
+                        const invL = 1 / laneDist;
+                        const lux = laneDx * invL, luz = laneDz * invL;
+                        for (const opp of opponents) {
+                            if (!opp.group.visible) continue;
+                            const ox = opp.group.position.x - holderPos.x;
+                            const oz = opp.group.position.z - holderPos.z;
+                            const proj = ox * lux + oz * luz;
+                            if (proj < 0.5 || proj > laneDist - 0.5) continue;
+                            const perp = Math.abs(ox * luz - oz * lux);
+                            if (perp < 1.5) laneBlocked += (1.5 - perp) * 2;
+                        }
+                    }
+
+                    // Score: avoid clustering with other teammates
+                    let tmSpacing = Infinity;
+                    for (const other of teammates) {
+                        if (other === tm || !other.group.visible) continue;
+                        const d = Math.hypot(other.group.position.x - px, other.group.position.z - pz);
+                        if (d < tmSpacing) tmSpacing = d;
+                    }
+                    // Also check distance from the human player
+                    if (playerData?.group?.visible && playerData !== holder) {
+                        const pd2 = Math.hypot(playerData.group.position.x - px, playerData.group.position.z - pz);
+                        if (pd2 < tmSpacing) tmSpacing = pd2;
+                    }
+                    const spacingPenalty = tmSpacing < 3.0 ? (3.0 - tmSpacing) * 3 : 0;
+
+                    const score = Math.min(nearestDefDist, 6) * 3
+                        + Math.max(0, 15 - rimDist) * 1.5
+                        - laneBlocked
+                        - spacingPenalty;
+
+                    if (score > bestCandidateScore) {
+                        bestCandidateScore = score;
+                        bestCandidate = { x: px, z: pz };
+                    }
+                }
+
+                if (bestCandidate) {
+                    tm._positionTarget = bestCandidate;
+                }
             }
-            const ptDx = tm._positionTarget.x - tmPos.x;
-            const ptDz = tm._positionTarget.z - tmPos.z;
-            if (Math.hypot(ptDx, ptDz) > 1.5) {
-                if (ptDz < -0.4) tmInput.forward = true;
-                if (ptDz > 0.4) tmInput.backward = true;
-                if (ptDx < -0.4) tmInput.left = true;
-                if (ptDx > 0.4) tmInput.right = true;
+
+            if (tm._positionTarget) {
+                const ptDx = tm._positionTarget.x - tmPos.x;
+                const ptDz = tm._positionTarget.z - tmPos.z;
+                if (Math.hypot(ptDx, ptDz) > 1.5) {
+                    if (ptDz < -0.4) tmInput.forward = true;
+                    if (ptDz > 0.4) tmInput.backward = true;
+                    if (ptDx < -0.4) tmInput.left = true;
+                    if (ptDx > 0.4) tmInput.right = true;
+                }
             }
             updatePlayer(tm, delta, tmInput, null, filteredColliders, null);
             return;
@@ -4434,6 +5656,7 @@ function updateTeammateAI(tm, delta) {
             const mark = getDefensiveMarkForPlayer(tm, teammates, offense, holder, TM_DEFEND_RIM_Z);
 
             if (mark?.role === 'onball') {
+                // On-ball: chase the holder aggressively
                 if (toHolderDist > DEF_ONBALL_STOP_DIST) {
                     if (toHolderDz < -0.35) tmInput.forward = true;
                     if (toHolderDz > 0.35) tmInput.backward = true;
@@ -4441,8 +5664,8 @@ function updateTeammateAI(tm, delta) {
                     if (toHolderDx > 0.35) tmInput.right = true;
                 }
                 if (
-                    toHolderDist < 1.25 &&
-                    Math.random() < TM_PUNCH_CHANCE * 0.75 &&
+                    toHolderDist < 1.4 &&
+                    Math.random() < TM_PUNCH_CHANCE &&
                     tm.stamina >= STAMINA_EXHAUSTED &&
                     !holder.blocking
                 ) {
@@ -4450,7 +5673,29 @@ function updateTeammateAI(tm, delta) {
                     drainStamina(tm, STAMINA_PUNCH_COST);
                 }
             } else if (mark) {
-                steerInputTowardPoint(tmInput, tmPos, mark.markX, mark.markZ, DEF_MARK_STICK_RADIUS);
+                // Deny/help: go to mark position, but also help pressure the holder
+                const canHelpPunch = toHolderDist < TM_HELP_PUNCH_RANGE &&
+                    tm.stamina >= STAMINA_EXHAUSTED && !holder.blocking;
+
+                if (canHelpPunch && toHolderDist < 1.4) {
+                    // Close enough to throw a help-defense punch
+                    if (Math.random() < TM_HELP_PUNCH_CHANCE) {
+                        tm.punchQueued = true;
+                        drainStamina(tm, STAMINA_PUNCH_COST);
+                    }
+                }
+
+                if (mark.role === 'help' && toHolderDist < 5.0) {
+                    // Help defender actively closes in on the ball handler (double-team)
+                    // Blend between mark position and holder position for trap pressure
+                    const trapBlend = Math.max(0, 1 - toHolderDist / 5.0) * 0.6;
+                    const targetX = mark.markX + (holder.group.position.x - mark.markX) * trapBlend;
+                    const targetZ = mark.markZ + (holder.group.position.z - mark.markZ) * trapBlend;
+                    steerInputTowardPoint(tmInput, tmPos, targetX, targetZ, DEF_MARK_STICK_RADIUS);
+                } else {
+                    steerInputTowardPoint(tmInput, tmPos, mark.markX, mark.markZ, DEF_MARK_STICK_RADIUS);
+                }
+
                 const face = Math.atan2(holder.group.position.x - tmPos.x, holder.group.position.z - tmPos.z);
                 tm.facingAngle = lerpAngle(tm.facingAngle || face, face, 1 - Math.exp(-8 * delta));
                 tm.group.rotation.y = tm.facingAngle;
@@ -6270,18 +7515,26 @@ function applyCameraLookAndFollow(delta) {
     _playerCamPhi += _camPhiVel * delta;
     _playerCamPhi = Math.max(0.2, Math.min(Math.PI / 2 - 0.05, _playerCamPhi));
 
-    // ── Very gentle auto-follow ──────────────────────────
-    // Only kicks in when walking AND not manually rotating AND severely off
+    // ── Smooth auto-follow ─────────────────────────────────
+    // Gradually rotates behind the player when moving and not manually looking.
+    // Uses two tiers: gentle drift when slightly off, stronger pull when very off.
     const manualRotating = cameraInput.rotateLeft || cameraInput.rotateRight;
-    if (!manualRotating && playerData.moveBlend > 0.5) {
+    if (!manualRotating && playerData.moveBlend > 0.35) {
         const desiredTheta = playerData.facingAngle - Math.PI;
         let diff = desiredTheta - _playerCamTheta;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
 
-        // Only auto-correct when severely misaligned (> ~90°)
-        if (Math.abs(diff) > 1.57) {
-            const followRate = 1 - Math.exp(-0.7 * delta);
+        const absDiff = Math.abs(diff);
+        // Gentle drift when moderately off (> ~40°), stronger pull when very off (> ~120°)
+        let followStrength = 0;
+        if (absDiff > 2.1) {
+            followStrength = 1.2;   // strong pull when way behind
+        } else if (absDiff > 0.7) {
+            followStrength = 0.35;  // gentle drift when moderately off
+        }
+        if (followStrength > 0) {
+            const followRate = 1 - Math.exp(-followStrength * delta);
             _playerCamTheta += diff * followRate;
         }
     }
@@ -6383,12 +7636,18 @@ function updateModeUI() {
         } else if (cameraMode === 'freeroam') {
             hint.textContent = 'Click to capture mouse | WASD / Arrows to move | Mouse to look | Space up | Shift down | ESC release';
         } else if (cameraMode === 'player') {
-            if (isSoloTipOffActive()) {
+            if (gameOverState) {
+                hint.textContent = 'Game Over! Press ESC or click Play Again';
+            } else if (isSoloTipOffActive()) {
                 hint.textContent = 'Jump Ball: Arrows move | WASD look | Space jump | Z secure ball';
+            } else if (isCheckBallActive()) {
+                hint.textContent = 'Check Ball — repositioning...';
             } else if (isInboundActive() && inboundState?.phase === 'passing' && inboundState?.inbounder === playerData) {
                 hint.textContent = 'Inbound: Press Z to pass the ball in';
             } else if (isInboundActive()) {
                 hint.textContent = 'Out of Bounds — waiting for inbound...';
+            } else if (clearBallRequired) {
+                hint.textContent = 'Clear the ball past the arc! | Arrows move | WASD look | Z pass';
             } else {
                 hint.textContent = 'Arrows move | WASD look | Space jump | Z pick up / pass | X shoot / dunk | B block | V punch | C sit';
             }
@@ -6465,7 +7724,7 @@ function animate() {
             const pp = playerData.group.position;
             const groundY = pp.y + (playerData.visualGroundOffsetY || 0);
             playerCameraTarget.set(pp.x, groundY + 1.2, pp.z);
-            const followLerp = 1 - Math.exp(-10 * delta);
+            const followLerp = 1 - Math.exp(-6 * delta);
             controls.target.lerp(playerCameraTarget, followLerp);
             controls.update();
             applyCameraLookAndFollow(delta);
@@ -6538,6 +7797,34 @@ function animate() {
         }
         // During inbound, block all other player actions
         if (!pickupWorldActive && isInboundActive()) {
+            shootingStance = false;
+            passingStance = false;
+            passTargetTeammate = null;
+            shootQueued = false;
+            passQueued = false;
+            cancelShootQueued = false;
+            sitToggleQueued = false;
+            pickupQueued = false;
+            resetShootInput();
+            resetPlayerInput();
+        }
+
+        // During check-ball, block all player actions (check-ball system controls all entities)
+        if (!pickupWorldActive && isCheckBallActive()) {
+            shootingStance = false;
+            passingStance = false;
+            passTargetTeammate = null;
+            shootQueued = false;
+            passQueued = false;
+            cancelShootQueued = false;
+            sitToggleQueued = false;
+            pickupQueued = false;
+            resetShootInput();
+            resetPlayerInput();
+        }
+
+        // During game over, block all player actions
+        if (gameOverState) {
             shootingStance = false;
             passingStance = false;
             passTargetTeammate = null;
@@ -6690,14 +7977,16 @@ function animate() {
 
             // Zero movement input so player stands still
             resetPlayerInput();
-        } else if (shootQueued && !passingStance && basketballData?.heldByPlayer && !playerData?.isGrounded) {
+        } else if (shootQueued && !passingStance && basketballData?.heldByPlayer && !playerData?.isGrounded
+                   && !isShotBlockedByClearBall(playerData)) {
             const dunkRim = findDunkRim();
             if (dunkRim && playerData.stamina >= STAMINA_EXHAUSTED) {
                 startDunk(dunkRim);
                 drainStamina(playerData, STAMINA_DUNK_COST);
             }
             shootQueued = false;
-        } else if (shootQueued && !passingStance && basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData && playerData?.isGrounded && playerData.stamina >= STAMINA_EXHAUSTED) {
+        } else if (shootQueued && !passingStance && basketballData?.heldByPlayer && basketballData.heldByPlayerData === playerData && playerData?.isGrounded && playerData.stamina >= STAMINA_EXHAUSTED
+                   && !isShotBlockedByClearBall(playerData)) {
             // Enter shooting stance
             shootingStance = true;
             shootTurnVelocity = 0;
@@ -6822,7 +8111,7 @@ function animate() {
             const pp = playerData.group.position;
             const groundY = pp.y + (playerData.visualGroundOffsetY || 0);
             playerCameraTarget.set(pp.x, groundY + 1.2, pp.z);
-            const followLerp = 1 - Math.exp(-10 * delta);
+            const followLerp = 1 - Math.exp(-6 * delta);
             controls.target.lerp(playerCameraTarget, followLerp);
             controls.update();
             applyCameraLookAndFollow(delta);
@@ -6834,16 +8123,17 @@ function animate() {
     // ── Guest state application (online mode) ────────
     if (!pickupWorldActive && isGuestSyncActive()) {
         applyGuestState(delta);
-        // Send our local input to the host
+        // Gate input during dead-ball phases: only movement, no actions
+        const guestDeadBall = !!checkBallState || !!gameOverState;
         setLocalInput({
             forward: playerInput.forward, backward: playerInput.backward,
             left: playerInput.left, right: playerInput.right,
-            jump: playerInput.jump,
-            actionZ: pickupQueued || passQueued,
-            actionX: shootQueued,
-            actionC: cancelShootQueued || sitToggleQueued,
-            actionV: playerData?.punchQueued || false,
-            block: blockHeld
+            jump: guestDeadBall ? false : playerInput.jump,
+            actionZ: guestDeadBall ? false : (pickupQueued || passQueued),
+            actionX: guestDeadBall ? false : shootQueued,
+            actionC: guestDeadBall ? false : (cancelShootQueued || sitToggleQueued),
+            actionV: guestDeadBall ? false : (playerData?.punchQueued || false),
+            block: guestDeadBall ? false : blockHeld
         });
     }
 
@@ -6880,6 +8170,9 @@ function animate() {
             if (opp === inboundState?.inbounder) continue; // inbounder handled by inbound system
             updatePlayer(opp, delta, idleInput, null, playerColliders.filter(c => c !== opp._collider), null);
         }
+    } else if (isCheckBallActive()) {
+        // During check-ball: all players controlled by check-ball state machine
+        // (updateCheckBallState handles movement for all entities via roles map)
     } else {
         for (let i = 0; i < opponents.length; i++) {
             const opp = opponents[i];
@@ -6921,6 +8214,8 @@ function animate() {
             updatePlayer(tm, delta, idleInput, null, playerColliders.filter(c => c !== tm._collider), null);
         }
         // Referee handled by inbound system
+    } else if (isCheckBallActive()) {
+        // During check-ball: all players controlled by check-ball state machine
     } else {
         for (let i = 0; i < teammates.length; i++) {
             const tm = teammates[i];
@@ -6947,7 +8242,7 @@ function animate() {
     }
 
     // ── Punch collision detection ────────────────────
-    if (!skipLocalAI && !tipOffActiveNow && !isInboundActive()) updatePunchCollisions();
+    if (!skipLocalAI && !tipOffActiveNow && !isInboundActive() && !isCheckBallActive()) updatePunchCollisions();
 
     if (skipLocalAI) {
         // Guest: ball state applied by applyGuestState(), skip local physics
@@ -6955,18 +8250,35 @@ function animate() {
         positionBallForTipOffHold();
     } else if (isInboundActive()) {
         updateInboundState(delta);
+    } else if (isCheckBallActive()) {
+        updateCheckBallState(delta);
     } else {
-        updateBasketball(basketballData, delta, playerColliders, playerData, allPlayers);
+        updateBasketball(basketballData, delta, playerColliders, playerData, allPlayers, handleBallPlayerContact);
 
-        // ── Out-of-bounds detection ──────────────────
+        // ── Out-of-bounds detection → redirect to check-ball in street mode ──
         if (matchLive && (gameMode === 'solo' || isHostSyncActive()) && !tipOffActiveNow && basketballData?.active
             && !basketballData.heldByPlayer && isBallOutOfBounds(basketballData)) {
-            triggerOutOfBounds();
+            // Street mode (solo + online host): OOB triggers check-ball from top of key
+            const lastTouch = basketballData._lastTouchRef;
+            if (lastTouch) {
+                lastPossessionTeam = isOnPlayerTeam(lastTouch) ? 'home' : 'away';
+            }
+            triggerDeadBall(lastPossessionTeam || 'home', 'oob');
+        }
+
+        // ── Clear-the-ball check ─────────────────────
+        if (matchLive && clearBallRequired) {
+            updateClearBall();
         }
     }
 
+    // ── Shot clock update ────────────────────────────
+    if (!skipLocalAI && !tipOffActiveNow && !isCheckBallActive()) {
+        updateShotClock(delta);
+    }
+
     // ── Teammate & opponent catch detection ──────────
-    if (!skipLocalAI && !tipOffActiveNow && !isInboundActive() && basketballData?.active && !basketballData.heldByPlayer) {
+    if (!skipLocalAI && !tipOffActiveNow && !isInboundActive() && !isCheckBallActive() && basketballData?.active && !basketballData.heldByPlayer) {
         for (const tm of teammates) {
             if (tm.stunTimer > 0) continue;
             if (tm._aiSitState) continue;
@@ -7052,6 +8364,7 @@ window.startSoloGame = startSoloGame;
 window.startOnline = startOnline;
 window.startFreePlay = startFreePlay;
 window.exitPickupWorldToMenu = exitPickupWorldToMenu;
+window.showModeSelect = showModeSelect;
 
 // ─── Start ──────────────────────────────────────────────────
 setGameplayHudVisible(false);

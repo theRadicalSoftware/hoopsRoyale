@@ -278,6 +278,7 @@
             transform: translateX(-50%);
             z-index: 120;
             display: none;
+            flex-direction: column;
             align-items: stretch;
             gap: 0;
             border-radius: 12px;
@@ -332,9 +333,172 @@
             top: 16px;
             transform: none;
         }
+        /* Score target line under scoreboard */
+        .sb-target {
+            font-size: 0.42rem;
+            letter-spacing: 0.2em;
+            text-transform: uppercase;
+            font-weight: 600;
+            text-align: center;
+            padding: 4px 0 2px;
+            color: rgba(255, 200, 140, 0.6);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .sb-teams-row {
+            display: flex;
+            align-items: stretch;
+        }
         /* Title sits below scoreboard in free play */
         #ui-overlay.title-under-sb {
             top: 78px;
+        }
+
+        /* ── Shot Clock ──────────────────────────────────── */
+        #shot-clock {
+            position: fixed;
+            top: 82px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 122;
+            padding: 4px 14px;
+            border-radius: 8px;
+            background: rgba(16, 24, 46, 0.55);
+            border: 1px solid rgba(255,255,255,0.12);
+            backdrop-filter: blur(4px);
+            pointer-events: none;
+            transition: border-color 0.3s ease, background 0.3s ease;
+        }
+        #shot-clock.sc-urgent {
+            border-color: rgba(255, 80, 60, 0.6);
+            background: rgba(60, 16, 16, 0.65);
+        }
+        #shot-clock-value {
+            font-size: 1.1rem;
+            font-weight: 800;
+            color: rgba(255, 240, 220, 0.9);
+            text-align: center;
+            min-width: 1.4em;
+        }
+        #shot-clock.sc-urgent #shot-clock-value {
+            color: #ff5a3a;
+        }
+
+        /* ── Hot Streak HUD ──────────────────────────────── */
+        #streak-hud {
+            position: fixed;
+            top: 72px;
+            right: 20px;
+            z-index: 122;
+            padding: 5px 16px;
+            border-radius: 999px;
+            font-size: 0.52rem;
+            font-weight: 800;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            opacity: 0;
+            transform: translateX(20px);
+            transition: opacity 0.4s ease, transform 0.4s ease;
+            pointer-events: none;
+        }
+        #streak-hud.active {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        #streak-hud.streak-home {
+            color: #fff;
+            background: linear-gradient(135deg, rgba(255, 80, 40, 0.75), rgba(255, 140, 40, 0.65));
+            border: 1px solid rgba(255, 120, 60, 0.5);
+            text-shadow: 0 0 8px rgba(255, 100, 40, 0.6);
+        }
+        #streak-hud.streak-away {
+            color: #fff;
+            background: linear-gradient(135deg, rgba(40, 80, 255, 0.75), rgba(40, 140, 255, 0.65));
+            border: 1px solid rgba(60, 120, 255, 0.5);
+            text-shadow: 0 0 8px rgba(40, 100, 255, 0.6);
+        }
+
+        /* ── Game Over Overlay ───────────────────────────── */
+        #game-over-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 950;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(6px);
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        }
+        #game-over-overlay.show {
+            opacity: 1;
+        }
+        .go-card {
+            text-align: center;
+            padding: 36px 48px 30px;
+            border-radius: 16px;
+            background: linear-gradient(160deg, rgba(16, 24, 46, 0.85), rgba(10, 16, 34, 0.75));
+            border: 1px solid rgba(255,255,255,0.14);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+            backdrop-filter: blur(8px);
+            min-width: 320px;
+            max-width: 480px;
+        }
+        .go-title {
+            font-size: 2.2rem;
+            font-weight: 900;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            text-shadow: 0 0 30px rgba(255, 106, 58, 0.5), 0 0 12px rgba(255, 106, 58, 0.3);
+        }
+        .go-score {
+            font-size: 2.8rem;
+            font-weight: 800;
+            color: rgba(255, 240, 220, 0.95);
+            margin-bottom: 18px;
+            letter-spacing: 0.08em;
+        }
+        .go-stats {
+            margin-bottom: 20px;
+        }
+        .go-stats-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.56rem;
+            letter-spacing: 0.08em;
+        }
+        .go-stats-table th {
+            color: rgba(255, 255, 255, 0.5);
+            font-weight: 600;
+            text-transform: uppercase;
+            padding: 4px 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .go-stats-table td {
+            padding: 5px 10px;
+            color: rgba(255, 240, 220, 0.85);
+        }
+        .go-row-home td:first-child { color: rgba(255, 160, 120, 0.85); }
+        .go-row-away td:first-child { color: rgba(130, 175, 255, 0.85); }
+        .go-btn {
+            padding: 10px 32px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 106, 58, 0.5);
+            background: linear-gradient(135deg, rgba(255, 80, 40, 0.35), rgba(255, 140, 40, 0.2));
+            color: rgba(255, 220, 200, 0.95);
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: background 0.25s ease, border-color 0.25s ease, transform 0.15s ease;
+            pointer-events: auto;
+        }
+        .go-btn:hover {
+            background: linear-gradient(135deg, rgba(255, 80, 40, 0.55), rgba(255, 140, 40, 0.35));
+            border-color: rgba(255, 106, 58, 0.7);
+            transform: scale(1.04);
         }
 
         /* ── In-game Controls Bar (bottom) ───────────────── */
@@ -2273,16 +2437,37 @@
 
     <!-- Solo Scoreboard -->
     <div id="solo-scoreboard">
-        <div class="sb-team sb-home">
-            <div class="sb-team-label">You</div>
-            <div class="sb-team-score" id="sb-home-score">0</div>
-            <div class="sb-team-detail" id="sb-home-detail">0/0</div>
+        <div class="sb-target" id="sb-target">First to 11</div>
+        <div class="sb-teams-row">
+            <div class="sb-team sb-home">
+                <div class="sb-team-label">You</div>
+                <div class="sb-team-score" id="sb-home-score">0</div>
+                <div class="sb-team-detail" id="sb-home-detail">0/0</div>
+            </div>
+            <div class="sb-divider"></div>
+            <div class="sb-team sb-away">
+                <div class="sb-team-label">Opp</div>
+                <div class="sb-team-score" id="sb-away-score">0</div>
+                <div class="sb-team-detail" id="sb-away-detail">0/0</div>
+            </div>
         </div>
-        <div class="sb-divider"></div>
-        <div class="sb-team sb-away">
-            <div class="sb-team-label">Opp</div>
-            <div class="sb-team-score" id="sb-away-score">0</div>
-            <div class="sb-team-detail" id="sb-away-detail">0/0</div>
+    </div>
+
+    <!-- Shot Clock -->
+    <div id="shot-clock" style="display:none;">
+        <div id="shot-clock-value">12</div>
+    </div>
+
+    <!-- Hot Streak HUD -->
+    <div id="streak-hud"></div>
+
+    <!-- Game Over Overlay -->
+    <div id="game-over-overlay">
+        <div class="go-card">
+            <div id="game-over-title" class="go-title">GAME OVER</div>
+            <div id="game-over-score" class="go-score">0 - 0</div>
+            <div id="game-over-stats" class="go-stats"></div>
+            <button class="go-btn" onclick="document.getElementById('game-over-overlay').style.display='none'; document.getElementById('game-over-overlay').classList.remove('show'); window.showModeSelect && window.showModeSelect();">Play Again</button>
         </div>
     </div>
 
