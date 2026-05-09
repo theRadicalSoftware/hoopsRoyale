@@ -164,7 +164,7 @@ export function tryPickUpBasketball(ball, playerData) {
     return true;
 }
 
-export function updateBasketball(ball, delta, environmentColliders, playerData = null, allPlayers = null, onPlayerContact = null) {
+export function updateBasketball(ball, delta, environmentColliders, playerData = null, allPlayers = null, onPlayerContact = null, onCollision = null) {
     if (!ball || !ball.active || !ball.mesh.visible) return;
 
     if (ball.heldByPlayer) {
@@ -220,8 +220,8 @@ export function updateBasketball(ball, delta, environmentColliders, playerData =
         }
 
         ball.mesh.position.addScaledVector(ball.velocity, step);
-        resolveFloor(ball, step);
-        resolveEnvironmentCollisions(ball, environmentColliders);
+        resolveFloor(ball, step, onCollision);
+        resolveEnvironmentCollisions(ball, environmentColliders, null, onCollision);
         // Resolve collision against all players
         const players = allPlayers || (playerData ? [playerData] : []);
         for (const pd of players) {
@@ -238,7 +238,7 @@ export function updateBasketball(ball, delta, environmentColliders, playerData =
     applySleep(ball);
 }
 
-function resolveFloor(ball, step) {
+function resolveFloor(ball, step, onCollision = null) {
     const p = ball.mesh.position;
     const floorY = sampleFloorY(p.x, p.z);
 
@@ -247,12 +247,20 @@ function resolveFloor(ball, step) {
         return;
     }
 
+    const wasAirborne = !ball.grounded;
+    const incomingY = ball.velocity.y;
     p.y = floorY + ball.radius;
     ball.grounded = true;
     ball._backspin = null;
 
     if (Math.abs(ball.velocity.y) > 0.35) {
         ball.velocity.y = -ball.velocity.y * FLOOR_BOUNCE;
+        if (onCollision && wasAirborne) {
+            const intensity = Math.min(1.5, Math.abs(incomingY) / 6);
+            const onCourt = Math.abs(p.x) <= COURT_WIDTH * 0.5 + ASPHALT_PAD_X
+                          && Math.abs(p.z) <= COURT_LENGTH * 0.5 + ASPHALT_PAD_Z;
+            onCollision({ kind: 'floor', position: p, intensity, hard: onCourt });
+        }
     } else {
         ball.velocity.y = 0;
     }
@@ -262,7 +270,7 @@ function resolveFloor(ball, step) {
     ball.velocity.z *= friction;
 }
 
-function resolveEnvironmentCollisions(ball, colliders, hitInfo = null) {
+function resolveEnvironmentCollisions(ball, colliders, hitInfo = null, onCollision = null) {
     if (!colliders || colliders.length === 0) return false;
 
     const p = ball.mesh.position;
@@ -286,9 +294,14 @@ function resolveEnvironmentCollisions(ball, colliders, hitInfo = null) {
         // Rim uses torus collision — ball passes through the open center
         if (collider.isRim) {
             if (ball._ignoreRimTimer > 0) continue;
+            const speedBefore = ball.velocity.length();
             if (resolveRimTorusCollision(ball, collider)) {
                 hadCollision = true;
                 if (hitInfo) { hitInfo.hit = true; hitInfo.nx = 0; hitInfo.nz = 0; }
+                if (onCollision) {
+                    const intensity = Math.min(1.4, Math.max(0.4, speedBefore / 5));
+                    onCollision({ kind: 'rim', position: p, intensity });
+                }
             }
             continue;
         }
@@ -309,6 +322,7 @@ function resolveEnvironmentCollisions(ball, colliders, hitInfo = null) {
                 dist = 0;
             }
 
+            const speedBefore = ball.velocity.length();
             const push = combined - dist + 1e-4;
             p.x += nx * push;
             p.z += nz * push;
@@ -318,6 +332,10 @@ function resolveEnvironmentCollisions(ball, colliders, hitInfo = null) {
                 hitInfo.hit = true;
                 hitInfo.nx = nx;
                 hitInfo.nz = nz;
+            }
+            if (onCollision && speedBefore > 1.0) {
+                const intensity = Math.min(1.3, speedBefore / 5);
+                onCollision({ kind: 'wall', position: p, intensity });
             }
             continue;
         }
@@ -356,6 +374,7 @@ function resolveEnvironmentCollisions(ball, colliders, hitInfo = null) {
                 }
             }
 
+            const speedBefore = ball.velocity.length();
             p.x += nx * push;
             p.z += nz * push;
             bounceAgainstNormal(ball, nx, nz, WALL_BOUNCE);
@@ -364,6 +383,14 @@ function resolveEnvironmentCollisions(ball, colliders, hitInfo = null) {
                 hitInfo.hit = true;
                 hitInfo.nx = nx;
                 hitInfo.nz = nz;
+            }
+            if (onCollision && speedBefore > 1.0) {
+                const intensity = Math.min(1.4, speedBefore / 5);
+                if (collider.isBackboard) {
+                    onCollision({ kind: 'backboard', position: p, intensity });
+                } else {
+                    onCollision({ kind: 'wall', position: p, intensity });
+                }
             }
         }
     }

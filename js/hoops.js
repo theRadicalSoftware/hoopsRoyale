@@ -81,7 +81,8 @@ function addHoopColliders(colliders, side, baselineZ, backboardCenterZ, backboar
         minZ: backboardCenterZ - (BACKBOARD_THICKNESS * 0.5 + 0.06),
         maxZ: backboardCenterZ + (BACKBOARD_THICKNESS * 0.5 + 0.06),
         yMin: boardMinY - 0.06,
-        yMax: boardMaxY + 0.1
+        yMax: boardMaxY + 0.1,
+        isBackboard: true
     });
 
     // Rim ring collision volume.
