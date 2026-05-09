@@ -86,6 +86,7 @@ function handleRemoteInput(msg) {
         actionX:  !!msg.x,
         actionC:  !!msg.c,
         actionV:  !!msg.v,
+        actionF:  !!msg.sf,
         block:    !!msg.bk
     });
 }

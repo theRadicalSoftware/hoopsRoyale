@@ -21,7 +21,7 @@ const MAX_SNAPSHOTS = 10;
 let currentInput = {
     forward: false, backward: false, left: false, right: false,
     jump: false, actionZ: false, actionX: false, actionC: false,
-    actionV: false, block: false
+    actionV: false, actionF: false, block: false
 };
 
 // Slot assignments and identity
@@ -104,6 +104,7 @@ function sendInput() {
         x: currentInput.actionX,
         c: currentInput.actionC,
         v: currentInput.actionV,
+        sf: currentInput.actionF,
         bk: currentInput.block
     });
 }

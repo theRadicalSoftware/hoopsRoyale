@@ -405,6 +405,14 @@ export function createPlayer(scene, options = {}) {
         punchElapsed: 0,
         punchHand: 'left',     // which hand is currently punching
         punchNextHand: 'right', // which hand punches next (alternates)
+        // ── Steal / reach state ─────────────────────
+        stealQueued: false,
+        stealActive: false,
+        stealPhase: 'none',    // 'extend' | 'hold' | 'retract' | 'none'
+        stealElapsed: 0,
+        stealHand: 'right',    // reaching hand (alternates)
+        stealNextHand: 'left',
+        stealCooldown: 0,      // countdown between attempts
         // ── Stun state (from being punched) ─────────
         stunTimer: 0,          // countdown — when >0, player is stunned
         stunDirX: 0,           // XZ direction of the hit (for recoil)
@@ -541,6 +549,7 @@ export function updatePlayer(pd, delta, input, movementBasis = null, colliders =
 
     // ── Punch state machine ──────────────────────────────
     updatePunchState(pd, delta, carryState);
+    updateStealState(pd, delta, carryState);
 
     // ── Animate limbs ────────────────────────────────────
     animateLimbs(pd, isMoving, delta, carryState);
@@ -759,6 +768,85 @@ function updatePunchState(pd, delta, carryState) {
             pd.punchElapsed = 0;
         }
     }
+}
+
+// ─── Steal / reach-in animation ─────────────────────────────
+// Different from punch: arm extends straight forward from the shoulder
+// (no hook arc), faster cadence. Used by the steal mechanic — separate
+// state machine so a player can reach without committing to a punch.
+const STEAL_EXTEND_TIME   = 0.10;
+const STEAL_HOLD_TIME     = 0.06;
+const STEAL_RETRACT_TIME  = 0.18;
+const STEAL_COOLDOWN_TIME = 0.45;
+const STEAL_HIT_RADIUS    = 0.95;   // generous pluck radius vs ball position
+
+// Forward-reach pose — arm out front, slight elbow bend, hand low/forward
+const STEAL_SHOULDER_X = -1.55;     // arm forward + slightly down
+const STEAL_SHOULDER_Y_L =  0.05;
+const STEAL_SHOULDER_Y_R = -0.05;
+const STEAL_SHOULDER_Z_L = -0.05;
+const STEAL_SHOULDER_Z_R =  0.05;
+const STEAL_ELBOW_X = -0.45;        // mostly straight, gentle bend
+
+function updateStealState(pd, delta, carryState) {
+    if (pd.stealCooldown > 0) pd.stealCooldown = Math.max(0, pd.stealCooldown - delta);
+
+    // Block during stances/stun/seated/dunking/blocking — same gating as punch
+    if (carryState?.shooting || carryState?.seated || carryState?.dunking || carryState?.hanging || carryState?.blocking || pd.stunTimer > 0) {
+        pd.stealQueued = false;
+        pd.stealActive = false;
+        pd.stealPhase = 'none';
+        return;
+    }
+
+    if (pd.stealQueued && !pd.stealActive && pd.stealCooldown <= 0) {
+        pd.stealQueued = false;
+        pd.stealActive = true;
+        pd.stealPhase = 'extend';
+        pd.stealElapsed = 0;
+        pd._stealHitLanded = false;
+
+        // Choose reaching hand: alternate, but if dribbling use the off-hand
+        if (carryState?.dribbling) {
+            const dribbleHand = pd._dribbleHand || 'right';
+            pd.stealHand = dribbleHand === 'right' ? 'left' : 'right';
+        } else {
+            pd.stealHand = pd.stealNextHand;
+            pd.stealNextHand = pd.stealNextHand === 'left' ? 'right' : 'left';
+        }
+    } else if (!pd.stealActive) {
+        pd.stealQueued = false;
+    }
+
+    if (pd.stealActive) {
+        pd.stealElapsed += delta;
+        if (pd.stealPhase === 'extend' && pd.stealElapsed >= STEAL_EXTEND_TIME) {
+            pd.stealPhase = 'hold';
+            pd.stealElapsed = 0;
+        } else if (pd.stealPhase === 'hold' && pd.stealElapsed >= STEAL_HOLD_TIME) {
+            pd.stealPhase = 'retract';
+            pd.stealElapsed = 0;
+        } else if (pd.stealPhase === 'retract' && pd.stealElapsed >= STEAL_RETRACT_TIME) {
+            pd.stealActive = false;
+            pd.stealPhase = 'none';
+            pd.stealElapsed = 0;
+            pd.stealCooldown = STEAL_COOLDOWN_TIME;
+        }
+    }
+}
+
+function getStealBlend(pd) {
+    if (!pd.stealActive) return 0;
+    if (pd.stealPhase === 'extend') {
+        const t = Math.min(pd.stealElapsed / STEAL_EXTEND_TIME, 1);
+        return t * (2 - t); // ease-out
+    }
+    if (pd.stealPhase === 'hold') return 1;
+    if (pd.stealPhase === 'retract') {
+        const t = Math.min(pd.stealElapsed / STEAL_RETRACT_TIME, 1);
+        return 1 - t * t;
+    }
+    return 0;
 }
 
 // Returns 0→1 punch blend: 0 = rest pose, 1 = full punch extension
@@ -1133,6 +1221,20 @@ function animateLimbs(pd, isMoving, delta, carryState = null) {
         shoulder.rotation.z += (zTarget - shoulder.rotation.z) * punchBlend;
     }
 
+    // ── Steal / reach-in overlay — straight-armed forward reach ─────
+    const stealBlend = getStealBlend(pd);
+    if (stealBlend > 0.001) {
+        const hand = pd.stealHand;
+        const shoulder = hand === 'left' ? j.leftShoulder : j.rightShoulder;
+        const elbow = hand === 'left' ? j.leftElbow : j.rightElbow;
+        const yTarget = hand === 'left' ? STEAL_SHOULDER_Y_L : STEAL_SHOULDER_Y_R;
+        const zTarget = hand === 'left' ? STEAL_SHOULDER_Z_L : STEAL_SHOULDER_Z_R;
+        shoulder.rotation.x += (STEAL_SHOULDER_X - shoulder.rotation.x) * stealBlend;
+        elbow.rotation.x += (STEAL_ELBOW_X - elbow.rotation.x) * stealBlend;
+        shoulder.rotation.y += (yTarget - shoulder.rotation.y) * stealBlend;
+        shoulder.rotation.z += (zTarget - shoulder.rotation.z) * stealBlend;
+    }
+
     // ── Flinch overlay — when stunned, body recoils and arms go limp ──
     const fb = pd.stunIntensity;
     if (fb > 0.001) {
@@ -1235,4 +1337,35 @@ export function updateStaminaBar(pd, _camera) {
     pd._staminaArcTrackMat.opacity = 0.26 * barOpacity;
 }
 
-export { PUNCH_HIT_RADIUS };
+export { PUNCH_HIT_RADIUS, STEAL_HIT_RADIUS };
+
+const _tmpStealHandPos = new THREE.Vector3();
+
+/**
+ * World position of the reaching hand during an active steal attempt.
+ * Returns null when no reach is in progress, the reach blend is too low
+ * to register a pluck, or the steal already landed this swing.
+ */
+export function getStealHandPosition(pd) {
+    if (!pd.stealActive) return null;
+    if (pd._stealHitLanded) return null;
+    const blend = getStealBlend(pd);
+    if (blend < 0.45) return null;
+
+    const hand = pd.stealHand;
+    const elbow = hand === 'right' ? pd.joints?.rightElbow : pd.joints?.leftElbow;
+    if (elbow) {
+        pd.group.updateMatrixWorld();
+        _tmpStealHandPos.set(0, -0.29, 0.01);
+        elbow.localToWorld(_tmpStealHandPos);
+        return _tmpStealHandPos;
+    }
+    // Fallback: estimate forward of body
+    const facing = pd.facingAngle || 0;
+    const fwdX = Math.sin(facing);
+    const fwdZ = Math.cos(facing);
+    const pos = pd.group.position;
+    const groundY = pos.y + (pd.visualGroundOffsetY || 0);
+    _tmpStealHandPos.set(pos.x + fwdX * 0.55, groundY + 1.10, pos.z + fwdZ * 0.55);
+    return _tmpStealHandPos;
+}
